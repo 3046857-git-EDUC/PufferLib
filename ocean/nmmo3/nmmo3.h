@@ -237,8 +237,14 @@ struct Log {
     float equip_defense;
     float r;
     float c;
-    float qwen3_action;
-    float qwen3_calls;
+    float qwen3_decisions;
+    float qwen3_failures;
+    float qwen3_move_actions;
+    float qwen3_attack_actions;
+    float qwen3_item_actions;
+    float qwen3_market_actions;
+    float qwen3_noop_actions;
+    float qwen3_shift_actions;
     float alive_agents;
     float dead_agents;
 };
@@ -727,6 +733,7 @@ struct MMO {
     float reward_item_level;
     float reward_market;
     float reward_death;
+    int qwen3_current_action;
 };
 
 Entity* get_entity(MMO* env, int pid) {
@@ -773,6 +780,7 @@ void add_player_log(MMO* env, int pid) {
 
 void init(MMO* env) {
     init_items();
+    env->qwen3_current_action = ATN_NOOP;
 
     int sz = env->width*env->height;
     env->counts = calloc(sz, sizeof(unsigned char));
@@ -1852,10 +1860,20 @@ void c_step(MMO* env) {
     env->tick += 1;
     int tick = env->tick;
 
-    if (getenv("NMMO3_USE_QWEN3") != NULL && tick % 36 == 0 && env->num_agents > 0) {
-        int group_action = nmmo3_qwen3_action(env, 0);
+    int qwen3_interval = 360;
+    const char* qwen3_interval_env = getenv("NMMO3_QWEN3_INTERVAL");
+    if (qwen3_interval_env != NULL) {
+        int configured_interval = atoi(qwen3_interval_env);
+        if (configured_interval > 0) {
+            qwen3_interval = configured_interval;
+        }
+    }
+    if (getenv("NMMO3_USE_QWEN3") != NULL && env->num_agents > 0) {
+        if (tick % qwen3_interval == 0) {
+            env->qwen3_current_action = nmmo3_qwen3_action(env, 0);
+        }
         for (int pid = 0; pid < env->num_agents; pid++) {
-            env->actions[pid] = group_action;
+            env->actions[pid] = env->qwen3_current_action;
         }
     }
 

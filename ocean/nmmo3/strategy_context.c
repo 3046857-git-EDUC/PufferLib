@@ -68,6 +68,22 @@ static const char* action_name(int action) {
     return action >= 0 && action < 26 ? names[action] : "INVALID";
 }
 
+static void record_qwen3_action(Log* log, int action) {
+    if (action == ATN_NOOP) {
+        log->qwen3_noop_actions += 1;
+    } else if (action == ATN_ATTACK) {
+        log->qwen3_attack_actions += 1;
+    } else if (is_move(action)) {
+        log->qwen3_move_actions += 1;
+    } else if (is_run(action)) {
+        log->qwen3_shift_actions += 1;
+    } else if (is_num(action)) {
+        log->qwen3_item_actions += 1;
+    } else if (action == ATN_BUY || action == ATN_SELL) {
+        log->qwen3_market_actions += 1;
+    }
+}
+
 int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
     int offset = 0;
     int group_alive = 0;
@@ -237,13 +253,13 @@ int nmmo3_qwen3_action(MMO* env, int pid) {
     char response[2048];
     ssize_t bytes_read;
     int status;
-    int action = ATN_NOOP;
+    int action = env->qwen3_current_action;
 
-    env->log.qwen3_calls += 1;
+    env->log.qwen3_decisions += 1;
 
     if (build_strategy_context(env, pid, &context) < 0 ||
         pipe(input_pipe) < 0 || pipe(output_pipe) < 0) {
-        return ATN_NOOP;
+        return action;
     }
     child = fork();
     if (child == 0) {
@@ -261,7 +277,7 @@ int nmmo3_qwen3_action(MMO* env, int pid) {
         close(input_pipe[1]);
         close(output_pipe[0]);
         close(output_pipe[1]);
-        return ATN_NOOP;
+        return action;
     }
     close(input_pipe[0]);
     close(output_pipe[1]);
@@ -271,7 +287,11 @@ int nmmo3_qwen3_action(MMO* env, int pid) {
     close(output_pipe[0]);
     waitpid(child, &status, 0);
     if (bytes_read <= 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        return ATN_NOOP;
+        env->log.qwen3_failures += 1;
+        record_qwen3_action(&env->log, action);
+        printf("Qwen3 unavailable; keeping previous group action: %s (%d)\n",
+            action_name(action), action);
+        return action;
     }
     response[bytes_read] = '\0';
     {
@@ -281,9 +301,9 @@ int nmmo3_qwen3_action(MMO* env, int pid) {
         }
     }
     if (action < ATN_DOWN || action > ATN_LEFT_SHIFT || action == 6) {
-        action = ATN_NOOP;
+        action = env->qwen3_current_action;
     }
-    env->log.qwen3_action = (float)action;
+    record_qwen3_action(&env->log, action);
     printf("Qwen3 recommended group action: tick=%d agents=%d action=%s (%d)\n",
         env->tick, env->num_agents, action_name(action), action);
     return action;

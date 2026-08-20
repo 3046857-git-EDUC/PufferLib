@@ -605,6 +605,8 @@ def load_config(env_name):
     parser.add_argument('--slowly', action='store_true', help='Use PyTorch training backend')
     parser.add_argument('--ollama-strategy', action='store_true',
         help='Use Ollama/Qwen3 to override agent 0 actions in NMMO3')
+    parser.add_argument('--ollama-interval', type=int, default=360,
+        help='NMMO3 ticks between shared Qwen3 strategy decisions')
     parser.add_argument('--save-frames', type=int, default=0)
     parser.add_argument('--gif-path', type=str, default='eval.gif')
     parser.add_argument('--fps', type=float, default=15)
@@ -672,7 +674,11 @@ def main():
     if args.get('ollama_strategy'):
         if env_name != 'nmmo3':
             raise ValueError('--ollama-strategy is only supported for nmmo3')
+        if args['ollama_interval'] <= 0:
+            raise ValueError('--ollama-interval must be positive')
         os.environ['NMMO3_USE_QWEN3'] = '1'
+        os.environ['NMMO3_QWEN3_INTERVAL'] = str(args['ollama_interval'])
+        print(f'Qwen3 group strategy enabled: one decision every {args["ollama_interval"]} ticks')
 
     if 'train' in mode:
         train(env_name=env_name, args=args)

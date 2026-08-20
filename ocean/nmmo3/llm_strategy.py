@@ -3,6 +3,7 @@
 
 import json
 import sys
+import http.client
 import urllib.request
 import urllib.error
 
@@ -96,11 +97,21 @@ def main():
         raise SystemExit("empty NMMO3 strategy context")
     try:
         result = query_qwen3(context)
-    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as error:
+    except (
+        urllib.error.URLError,
+        http.client.RemoteDisconnected,
+        TimeoutError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as error:
         print(f"Qwen3 request failed: {error}", file=sys.stderr)
-        result = {"goal": "SURVIVE", "priority": "NOOP", "action": "NOOP", "action_code": 4}
+        raise SystemExit(1)
     print(json.dumps(result))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        raise SystemExit(130)
