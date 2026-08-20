@@ -1,8 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "puffernet.h"
 #include "nmmo3.h"
+#include "strategy_context.h"
+#include "strategy_context.c"
 
 // Only run 1 agent in the C version
 // You can run the full 1024 on GPU
@@ -151,6 +156,78 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
     softmax_multidiscrete(net->multidiscrete, net->decoder->output, actions);
 }
 
+static int query_llm_strategy(MMO* env, int pid) {
+    int input_pipe[2];
+    int output_pipe[2];
+    pid_t child;
+    StrategyContext context;
+    char response[2048];
+    ssize_t bytes_read;
+    int status;
+    int action = ATN_NOOP;
+
+    if (build_strategy_context(env, pid, &context) < 0 ||
+        pipe(input_pipe) < 0 || pipe(output_pipe) < 0) {
+        return ATN_NOOP;
+    }
+
+    child = fork();
+    if (child == 0) {
+        dup2(input_pipe[0], STDIN_FILENO);
+        dup2(output_pipe[1], STDOUT_FILENO);
+        close(input_pipe[0]);
+        close(input_pipe[1]);
+        close(output_pipe[0]);
+        close(output_pipe[1]);
+        execlp("python3", "python3", "ocean/nmmo3/llm_strategy.py", (char*)NULL);
+        _exit(127);
+    }
+    if (child < 0) {
+        close(input_pipe[0]);
+        close(input_pipe[1]);
+        close(output_pipe[0]);
+        close(output_pipe[1]);
+        return ATN_NOOP;
+    }
+
+    close(input_pipe[0]);
+    close(output_pipe[1]);
+    (void)write(input_pipe[1], context.text, strlen(context.text));
+    close(input_pipe[1]);
+
+    bytes_read = read(output_pipe[0], response, sizeof(response) - 1);
+    close(output_pipe[0]);
+    waitpid(child, &status, 0);
+    if (bytes_read <= 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return ATN_NOOP;
+    }
+    response[bytes_read] = '\0';
+
+    {
+        char* action_field = strstr(response, "\"action_code\"");
+        if (action_field) {
+            (void)sscanf(action_field, "\"action_code\"%*[^0-9]%d", &action);
+        }
+    }
+    if (action < ATN_DOWN || action > ATN_LEFT_SHIFT || action == 6) {
+        return ATN_NOOP;
+    }
+    return action;
+}
+
+static const char* action_name(int action) {
+    static const char* names[26] = {
+        "MOVE_DOWN", "MOVE_UP", "MOVE_RIGHT", "MOVE_LEFT", "NOOP",
+        "ATTACK", "INVALID", "UI", "USE_ITEM_1", "USE_ITEM_2",
+        "USE_ITEM_3", "USE_ITEM_4", "USE_ITEM_5", "USE_ITEM_6",
+        "USE_ITEM_7", "USE_ITEM_8", "USE_ITEM_9", "USE_ITEM_0",
+        "USE_ITEM_MINUS", "USE_ITEM_EQUALS", "BUY", "SELL",
+        "MOVE_DOWN_SHIFT", "MOVE_UP_SHIFT", "MOVE_RIGHT_SHIFT",
+        "MOVE_LEFT_SHIFT"
+    };
+    return action >= 0 && action < 26 ? names[action] : "INVALID";
+}
+
 void demo(int num_players) {
     Weights* weights = load_weights("resources/nmmo3/nmmo3_weights.bin");
     MMONet* net = init_mmonet(weights, num_players);
@@ -184,13 +261,22 @@ void demo(int num_players) {
 
     float human_action = ATN_NOOP;
     bool human_mode = false;
+    const char* use_qwen3_env = getenv("NMMO3_USE_QWEN3");
+    bool use_qwen3 = use_qwen3_env != NULL &&
+        (strcmp(use_qwen3_env, "1") == 0 || strcmp(use_qwen3_env, "true") == 0);
     int i = 1;
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_LEFT_CONTROL)) {
             human_mode = !human_mode;
         }
         if (i % 36 == 0) {
-            forward(net, env.observations, env.terminals, env.actions);
+            if (use_qwen3) {
+                env.actions[0] = query_llm_strategy(&env, 0);
+                printf("Qwen3 recommended action: %s (%d)\n",
+                    action_name((int)env.actions[0]), (int)env.actions[0]);
+            } else {
+                forward(net, env.observations, env.terminals, env.actions);
+            }
             if (human_mode) {
                 env.actions[0] = human_action;
             }

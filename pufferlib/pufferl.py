@@ -603,6 +603,8 @@ def load_config(env_name):
     parser.add_argument('--wandb-group', type=str, default='debug')
     parser.add_argument('--tag', type=str, default=None, help='Tag for experiment')
     parser.add_argument('--slowly', action='store_true', help='Use PyTorch training backend')
+    parser.add_argument('--ollama-strategy', action='store_true',
+        help='Use Ollama/Qwen3 to override agent 0 actions in NMMO3')
     parser.add_argument('--save-frames', type=int, default=0)
     parser.add_argument('--gif-path', type=str, default='eval.gif')
     parser.add_argument('--fps', type=float, default=15)
@@ -666,6 +668,11 @@ def main():
     mode = sys.argv.pop(1)
     env_name = sys.argv.pop(1)
     args = load_config(env_name)
+
+    if args.get('ollama_strategy'):
+        if env_name != 'nmmo3':
+            raise ValueError('--ollama-strategy is only supported for nmmo3')
+        os.environ['NMMO3_USE_QWEN3'] = '1'
 
     if 'train' in mode:
         train(env_name=env_name, args=args)

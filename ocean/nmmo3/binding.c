@@ -1,4 +1,5 @@
 #include "nmmo3.h"
+#include "strategy_context.c"
 #define OBS_SIZE 1707
 #define NUM_ATNS 1
 #define ACT_SIZES {26}

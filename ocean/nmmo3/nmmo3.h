@@ -1,3 +1,6 @@
+#ifndef NMMO3_H
+#define NMMO3_H
+
 // Neural MMO 3 by Joseph Suarez
 // This was the first new environment I started for Puffer Ocean.
 // I started it in Cython and then ported it to C. This is why there
@@ -1197,6 +1200,8 @@ inline bool dest_check(MMO* env, int r, int c) {
     return PASSABLE[(int)env->terrain[adr]] & (env->pids[adr] == -1);
 }
 
+int nmmo3_qwen3_action(MMO* env, int pid);
+
 void move(MMO* env, int pid, int direction, bool run) {
     Entity* entity = get_entity(env, pid);
     int r = entity->r;
@@ -1842,6 +1847,10 @@ void c_reset(MMO* env) {
 void c_step(MMO* env) {
     env->tick += 1;
     int tick = env->tick;
+
+    if (getenv("NMMO3_USE_QWEN3") != NULL && tick % 36 == 0 && env->num_agents > 0) {
+        env->actions[0] = nmmo3_qwen3_action(env, 0);
+    }
 
     // Respawn resources
     RespawnBuffer* buffer = env->resource_respawn_buffer;
@@ -3170,5 +3179,7 @@ int c_render(MMO* env) {
     }
     return action;
 }
+
+#endif
 
 
