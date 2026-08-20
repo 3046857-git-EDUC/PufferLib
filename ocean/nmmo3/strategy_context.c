@@ -70,6 +70,15 @@ static const char* action_name(int action) {
 
 int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
     int offset = 0;
+    int group_alive = 0;
+    int group_dead = 0;
+    int group_r = 0;
+    int group_c = 0;
+    int group_comb = 0;
+    int group_prof = 0;
+    int group_hp = 0;
+    int group_hp_max = 0;
+    int group_gold = 0;
     Entity* self;
     Reward* reward;
 
@@ -146,12 +155,43 @@ int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
     context->market_buys = env->market_buys;
     context->market_sells = env->market_sells;
 
+    for (int i = 0; i < env->num_agents; i++) {
+        Entity* player = &env->players[i];
+        group_r += player->r;
+        group_c += player->c;
+        group_comb += player->comb_lvl;
+        group_prof += player->prof_lvl;
+        group_hp += player->hp;
+        group_hp_max += player->hp_max;
+        group_gold += player->gold;
+        if (player->hp > 0) {
+            group_alive++;
+        } else {
+            group_dead++;
+        }
+    }
+    if (env->num_agents > 0) {
+        group_r /= env->num_agents;
+        group_c /= env->num_agents;
+        group_comb /= env->num_agents;
+        group_prof /= env->num_agents;
+        group_hp /= env->num_agents;
+        group_hp_max /= env->num_agents;
+        group_gold /= env->num_agents;
+    }
+
     offset = append_text(context->text, offset,
-        "NMMO_STRATEGY_CONTEXT\nagent_id=%d\ntick=%d\n\nSELF\n"
+        "NMMO_STRATEGY_CONTEXT\nstrategy_scope=GROUP\ncontroller_agent=%d\ntick=%d\n\n"
+        "GROUP_STATE\nagent_count=%d\nalive_agents=%d\ndead_agents=%d\n"
+        "average_position=%d,%d\naverage_combat_level=%d\n"
+        "average_profession_level=%d\naverage_hp=%d/%d\naverage_gold=%d\n\n"
+        "SELF\n"
         "position=%d,%d\ncombat_level=%d\nprofession_level=%d\nhp=%d/%d\n"
         "gold=%d\nin_combat=%d\nequipment_attack=%d\nequipment_defense=%d\n"
         "wander_range=%d\nranged=%d\ngoal=%d\n\n",
-        pid, env->tick, context->self_r, context->self_c, context->self_comb_lvl,
+        pid, env->tick, env->num_agents, group_alive, group_dead,
+        group_r, group_c, group_comb, group_prof, group_hp, group_hp_max, group_gold,
+        context->self_r, context->self_c, context->self_comb_lvl,
         context->self_prof_lvl, context->self_hp, context->self_hp_max, context->self_gold,
         context->self_in_combat, context->self_equipment_attack,
         context->self_equipment_defense, context->self_wander_range,
@@ -244,7 +284,7 @@ int nmmo3_qwen3_action(MMO* env, int pid) {
         action = ATN_NOOP;
     }
     env->log.qwen3_action = (float)action;
-    printf("Qwen3 recommended action: tick=%d agent=%d action=%s (%d)\n",
-        env->tick, pid, action_name(action), action);
+    printf("Qwen3 recommended group action: tick=%d agents=%d action=%s (%d)\n",
+        env->tick, env->num_agents, action_name(action), action);
     return action;
 }

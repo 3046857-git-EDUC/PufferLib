@@ -52,4 +52,6 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "c", log->c);
     dict_set(out, "qwen3_action", log->qwen3_action);
     dict_set(out, "qwen3_calls", log->qwen3_calls);
+    dict_set(out, "alive_agents", log->alive_agents);
+    dict_set(out, "dead_agents", log->dead_agents);
 }

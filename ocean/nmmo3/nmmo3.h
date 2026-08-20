@@ -239,6 +239,8 @@ struct Log {
     float c;
     float qwen3_action;
     float qwen3_calls;
+    float alive_agents;
+    float dead_agents;
 };
  
 // TODO: This is actually simplex and we should probably use the original impl
@@ -1851,7 +1853,10 @@ void c_step(MMO* env) {
     int tick = env->tick;
 
     if (getenv("NMMO3_USE_QWEN3") != NULL && tick % 36 == 0 && env->num_agents > 0) {
-        env->actions[0] = nmmo3_qwen3_action(env, 0);
+        int group_action = nmmo3_qwen3_action(env, 0);
+        for (int pid = 0; pid < env->num_agents; pid++) {
+            env->actions[pid] = group_action;
+        }
     }
 
     // Respawn resources
@@ -2131,6 +2136,18 @@ void c_step(MMO* env) {
             entity->ui_mode = MODE_SELL_SELECT;
         }
     }
+    int alive_agents = 0;
+    int dead_agents = 0;
+    for (int pid = 0; pid < env->num_agents; pid++) {
+        if (env->players[pid].hp > 0) {
+            alive_agents += 1;
+        } else {
+            dead_agents += 1;
+        }
+    }
+    // vecenv averages Log fields by episode count before displaying them.
+    env->log.alive_agents = alive_agents * env->log.n;
+    env->log.dead_agents = dead_agents * env->log.n;
     compute_all_obs(env);
     for (int pid = 0; pid < env->num_agents; pid++) {
         Reward* reward = &env->reward_struct[pid];

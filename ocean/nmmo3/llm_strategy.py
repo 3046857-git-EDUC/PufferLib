@@ -55,10 +55,17 @@ def parse_strategy_response(response_text):
 
 
 def query_qwen3(strategy_context):
-    prompt = f"""You are the strategic advisor for an NMMO3 reinforcement-learning agent.
+    prompt = f"""You are the strategic advisor for a GROUP of NMMO3 reinforcement-learning agents.
 
 The following information was generated directly from the current NMMO3 environment state.
+Your recommendation is a single shared group directive and will be applied to all agents.
+Use GROUP_STATE as the authoritative summary; SELF and nearby entities are supporting detail.
 Do not invent information. Choose one short-term strategy that maximizes survival and useful progress.
+ACTION must be exactly one of: MOVE_DOWN, MOVE_UP, MOVE_RIGHT, MOVE_LEFT,
+NOOP, ATTACK, USE_ITEM_1, USE_ITEM_2, USE_ITEM_3, USE_ITEM_4, USE_ITEM_5,
+USE_ITEM_6, USE_ITEM_7, USE_ITEM_8, USE_ITEM_9, USE_ITEM_0, USE_ITEM_MINUS,
+USE_ITEM_EQUALS, BUY, SELL, MOVE_DOWN_SHIFT, MOVE_UP_SHIFT,
+MOVE_RIGHT_SHIFT, MOVE_LEFT_SHIFT.
 Return exactly three lines and no markdown:
 GOAL: <goal>
 PRIORITY: <priority>
@@ -67,11 +74,18 @@ ACTION: <action>
 {strategy_context}"""
     request = urllib.request.Request(
         OLLAMA_URL,
-        data=json.dumps({"model": MODEL, "prompt": prompt, "stream": False, "temperature": 0.2}).encode(),
+        data=json.dumps({
+            "model": MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "think": False,
+            "temperature": 0.2,
+            "keep_alive": "10m",
+        }).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with urllib.request.urlopen(request, timeout=120) as response:
         payload = json.load(response)
     return parse_strategy_response(payload.get("response", ""))
 
