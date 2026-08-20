@@ -55,6 +55,19 @@ static int append_text(char* text, int offset, const char* format, ...) {
     return offset + written;
 }
 
+static const char* action_name(int action) {
+    static const char* names[26] = {
+        "MOVE_DOWN", "MOVE_UP", "MOVE_RIGHT", "MOVE_LEFT", "NOOP",
+        "ATTACK", "INVALID", "UI", "USE_ITEM_1", "USE_ITEM_2",
+        "USE_ITEM_3", "USE_ITEM_4", "USE_ITEM_5", "USE_ITEM_6",
+        "USE_ITEM_7", "USE_ITEM_8", "USE_ITEM_9", "USE_ITEM_0",
+        "USE_ITEM_MINUS", "USE_ITEM_EQUALS", "BUY", "SELL",
+        "MOVE_DOWN_SHIFT", "MOVE_UP_SHIFT", "MOVE_RIGHT_SHIFT",
+        "MOVE_LEFT_SHIFT"
+    };
+    return action >= 0 && action < 26 ? names[action] : "INVALID";
+}
+
 int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
     int offset = 0;
     Entity* self;
@@ -186,6 +199,8 @@ int nmmo3_qwen3_action(MMO* env, int pid) {
     int status;
     int action = ATN_NOOP;
 
+    env->log.qwen3_calls += 1;
+
     if (build_strategy_context(env, pid, &context) < 0 ||
         pipe(input_pipe) < 0 || pipe(output_pipe) < 0) {
         return ATN_NOOP;
@@ -228,6 +243,8 @@ int nmmo3_qwen3_action(MMO* env, int pid) {
     if (action < ATN_DOWN || action > ATN_LEFT_SHIFT || action == 6) {
         action = ATN_NOOP;
     }
-    printf("Qwen3 recommended action: %d\n", action);
+    env->log.qwen3_action = (float)action;
+    printf("Qwen3 recommended action: tick=%d agent=%d action=%s (%d)\n",
+        env->tick, pid, action_name(action), action);
     return action;
 }

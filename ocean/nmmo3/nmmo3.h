@@ -237,6 +237,8 @@ struct Log {
     float equip_defense;
     float r;
     float c;
+    float qwen3_action;
+    float qwen3_calls;
 };
  
 // TODO: This is actually simplex and we should probably use the original impl

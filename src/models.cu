@@ -637,17 +637,18 @@ static void mingru_reg_train(void* w, void* activations, Allocator* acts, Alloca
     alloc_register(acts,&a->grad_input_buf);
     alloc_register(acts,&a->grad_next_state);
     for (int i = 0; i < m->num_layers; i++) {
-        a->scan_bufs[i] = {
-            .B = B, .T = TT, .H = H,
-            .a_star =           {.shape = {B, TT + 1, H}},
-            .s_vals =           {.shape = {B, TT + 1, H}},
-            .log_values_buf =   {.shape = {B, TT + 1, H}},
-            .out =              {.shape = {B, TT, H}},
-            .next_state =       {.shape = {B, 1, H}},
-            .grad_combined =    {.shape = {B, TT, 3 * H}},
-            .grad_state =       {.shape = {B, 1, H}},
-            .grad_input =       {.shape = {B, TT, H}},
-        };
+        PrefixScan& scan = a->scan_bufs[i];
+        scan.B = B;
+        scan.T = TT;
+        scan.H = H;
+        scan.a_star.shape = {B, TT + 1, H};
+        scan.s_vals.shape = {B, TT + 1, H};
+        scan.log_values_buf.shape = {B, TT + 1, H};
+        scan.out.shape = {B, TT, H};
+        scan.next_state.shape = {B, 1, H};
+        scan.grad_combined.shape = {B, TT, 3 * H};
+        scan.grad_state.shape = {B, 1, H};
+        scan.grad_input.shape = {B, TT, H};
         a->saved_inputs[i]  = {.shape = {B, TT, H}};
         a->combined_bufs[i] = {.shape = {B_TT, 3 * H}};
         a->wgrad_scratch[i] = {.shape = {3 * H, H}};
