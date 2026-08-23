@@ -597,7 +597,6 @@ void init_items() {
 #define MAX_MARKET_OFFERS 32
 #define QWEN3_HISTORY_SIZE 4
 #define QWEN3_HISTORY_ENTRY_SIZE 96
-#define QWEN3_QUEUE_SIZE 8
 
 typedef struct MarketOffer MarketOffer;
 struct MarketOffer {
@@ -740,7 +739,6 @@ struct MMO {
     char qwen3_history[QWEN3_HISTORY_SIZE][QWEN3_HISTORY_ENTRY_SIZE];
     int qwen3_history_count;
     int qwen3_history_next;
-    int qwen3_pending;
 };
 
 Entity* get_entity(MMO* env, int pid) {
@@ -827,9 +825,6 @@ void allocate_mmo(MMO* env) {
 }
 
 void c_close(MMO* env) {
-    while (env->qwen3_pending) {
-        usleep(1000);
-    }
     free(env->counts);
     free(env->terrain);
     free(env->rendered);
@@ -1882,7 +1877,6 @@ void c_step(MMO* env) {
         }
     }
     if (getenv("NMMO3_USE_QWEN3") != NULL && env->num_agents > 0) {
-        qwen3_poll_results(env);
         if (tick % qwen3_interval == 0) {
             env->qwen3_current_action = nmmo3_qwen3_action(env, 0);
         }
