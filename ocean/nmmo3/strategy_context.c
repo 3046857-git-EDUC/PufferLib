@@ -7,6 +7,7 @@
 #include <sys/select.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <pthread.h>
 #include <unistd.h>
 
 static int abs_int(int value) {
@@ -83,6 +84,180 @@ static void record_qwen3_action(Log* log, int action) {
         log->qwen3_item_actions += 1;
     } else if (action == ATN_BUY || action == ATN_SELL) {
         log->qwen3_market_actions += 1;
+    }
+}
+
+typedef struct {
+    MMO* env;
+    int previous_action;
+    char text[STRATEGY_CONTEXT_MAX];
+} Qwen3Job;
+
+typedef struct {
+    MMO* env;
+    int action;
+    int success;
+} Qwen3Result;
+
+static pthread_mutex_t qwen3_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t qwen3_condition = PTHREAD_COND_INITIALIZER;
+static pthread_t qwen3_worker;
+static int qwen3_worker_started;
+static Qwen3Job qwen3_jobs[QWEN3_QUEUE_SIZE];
+static int qwen3_job_head;
+static int qwen3_job_count;
+static Qwen3Result qwen3_results[QWEN3_QUEUE_SIZE];
+static int qwen3_result_count;
+
+static int run_qwen3_request(const char* text, int previous_action, int* success) {
+    int input_pipe[2];
+    int output_pipe[2];
+    pid_t child;
+    char response[2048];
+    ssize_t bytes_read;
+    int status;
+    int action = previous_action;
+    const int qwen3_timeout_seconds = 15;
+
+    *success = 0;
+    if (pipe(input_pipe) < 0 || pipe(output_pipe) < 0) {
+        return action;
+    }
+    child = fork();
+    if (child == 0) {
+        dup2(input_pipe[0], STDIN_FILENO);
+        dup2(output_pipe[1], STDOUT_FILENO);
+        close(input_pipe[0]);
+        close(input_pipe[1]);
+        close(output_pipe[0]);
+        close(output_pipe[1]);
+        execlp("python3", "python3", "ocean/nmmo3/llm_strategy.py", (char*)NULL);
+        _exit(127);
+    }
+    if (child < 0) {
+        close(input_pipe[0]);
+        close(input_pipe[1]);
+        close(output_pipe[0]);
+        close(output_pipe[1]);
+        return action;
+    }
+    close(input_pipe[0]);
+    close(output_pipe[1]);
+    (void)write(input_pipe[1], text, strlen(text));
+    (void)write(input_pipe[1], "\0", 1);
+    close(input_pipe[1]);
+
+    {
+        fd_set read_fds;
+        struct timeval timeout = {.tv_sec = qwen3_timeout_seconds, .tv_usec = 0};
+        FD_ZERO(&read_fds);
+        FD_SET(output_pipe[0], &read_fds);
+        if (select(output_pipe[0] + 1, &read_fds, NULL, NULL, &timeout) <= 0) {
+            kill(child, SIGKILL);
+            close(output_pipe[0]);
+            waitpid(child, &status, 0);
+            return action;
+        }
+        bytes_read = read(output_pipe[0], response, sizeof(response) - 1);
+    }
+    close(output_pipe[0]);
+    waitpid(child, &status, 0);
+    if (bytes_read <= 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return action;
+    }
+    response[bytes_read] = '\0';
+    {
+        char* action_field = strstr(response, "\"action_code\"");
+        if (action_field) {
+            (void)sscanf(action_field, "\"action_code\"%*[^0-9]%d", &action);
+        }
+    }
+    if (action < ATN_DOWN || action > ATN_LEFT_SHIFT || action == 6) {
+        return previous_action;
+    }
+    *success = 1;
+    return action;
+}
+
+static void* qwen3_worker_main(void* unused) {
+    (void)unused;
+    for (;;) {
+        Qwen3Job job;
+        int success;
+        int action;
+        pthread_mutex_lock(&qwen3_mutex);
+        while (qwen3_job_count == 0) {
+            pthread_cond_wait(&qwen3_condition, &qwen3_mutex);
+        }
+        job = qwen3_jobs[qwen3_job_head];
+        qwen3_job_head = (qwen3_job_head + 1) % QWEN3_QUEUE_SIZE;
+        qwen3_job_count -= 1;
+        pthread_mutex_unlock(&qwen3_mutex);
+
+        action = run_qwen3_request(job.text, job.previous_action, &success);
+
+        pthread_mutex_lock(&qwen3_mutex);
+        if (qwen3_result_count < QWEN3_QUEUE_SIZE) {
+            qwen3_results[qwen3_result_count++] = (Qwen3Result){
+                .env = job.env, .action = action, .success = success};
+            job.env->qwen3_pending = 0;
+        }
+        pthread_mutex_unlock(&qwen3_mutex);
+    }
+    return NULL;
+}
+
+static int qwen3_start_worker(void) {
+    int result = 0;
+    pthread_mutex_lock(&qwen3_mutex);
+    if (!qwen3_worker_started) {
+        result = pthread_create(&qwen3_worker, NULL, qwen3_worker_main, NULL);
+        if (result == 0) {
+            qwen3_worker_started = 1;
+        }
+    }
+    pthread_mutex_unlock(&qwen3_mutex);
+    return result;
+}
+
+static void qwen3_record_result(MMO* env, int action, int success) {
+    snprintf(env->qwen3_history[env->qwen3_history_next], QWEN3_HISTORY_ENTRY_SIZE,
+        "tick=%d action=%s (%d) result=%s", env->tick, action_name(action), action,
+        success ? "completed" : "failed");
+    env->qwen3_history_next = (env->qwen3_history_next + 1) % QWEN3_HISTORY_SIZE;
+    if (env->qwen3_history_count < QWEN3_HISTORY_SIZE) {
+        env->qwen3_history_count += 1;
+    }
+    record_qwen3_action(&env->log, action);
+    if (!success) {
+        env->log.qwen3_failures += 1;
+    }
+}
+
+static void qwen3_poll_results(MMO* env) {
+    Qwen3Result result;
+    int found = 0;
+
+    pthread_mutex_lock(&qwen3_mutex);
+    for (int i = 0; i < qwen3_result_count; i++) {
+        if (qwen3_results[i].env == env) {
+            result = qwen3_results[i];
+            for (int j = i + 1; j < qwen3_result_count; j++) {
+                qwen3_results[j - 1] = qwen3_results[j];
+            }
+            qwen3_result_count -= 1;
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&qwen3_mutex);
+
+    if (found) {
+        env->qwen3_current_action = result.action;
+        qwen3_record_result(env, result.action, result.success);
+        printf("Qwen3 %s: tick=%d action=%s (%d)\n",
+            result.success ? "completed" : "failed",
+            env->tick, action_name(result.action), result.action);
     }
 }
 
@@ -253,92 +428,27 @@ int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
 }
 
 int nmmo3_qwen3_action(MMO* env, int pid) {
-    int input_pipe[2];
-    int output_pipe[2];
-    pid_t child;
     StrategyContext context;
-    char response[2048];
-    ssize_t bytes_read;
-    int status;
-    int action = env->qwen3_current_action;
-    const int qwen3_timeout_seconds = 15;
+    int queue_index;
 
-    #define RECORD_QWEN3_HISTORY(result) do { \
-        snprintf(env->qwen3_history[env->qwen3_history_next], QWEN3_HISTORY_ENTRY_SIZE, \
-            "tick=%d action=%s (%d) result=%s", env->tick, action_name(action), action, result); \
-        env->qwen3_history_next = (env->qwen3_history_next + 1) % QWEN3_HISTORY_SIZE; \
-        if (env->qwen3_history_count < QWEN3_HISTORY_SIZE) env->qwen3_history_count += 1; \
-    } while (0)
+    if (env->qwen3_pending || qwen3_start_worker() != 0 ||
+        build_strategy_context(env, pid, &context) < 0) {
+        return env->qwen3_current_action;
+    }
 
+    pthread_mutex_lock(&qwen3_mutex);
+    if (qwen3_job_count >= QWEN3_QUEUE_SIZE) {
+        pthread_mutex_unlock(&qwen3_mutex);
+        return env->qwen3_current_action;
+    }
+    queue_index = (qwen3_job_head + qwen3_job_count) % QWEN3_QUEUE_SIZE;
+    qwen3_jobs[queue_index].env = env;
+    qwen3_jobs[queue_index].previous_action = env->qwen3_current_action;
+    memcpy(qwen3_jobs[queue_index].text, context.text, sizeof(context.text));
+    qwen3_job_count += 1;
+    env->qwen3_pending = 1;
     env->log.qwen3_decisions += 1;
-
-    if (build_strategy_context(env, pid, &context) < 0 ||
-        pipe(input_pipe) < 0 || pipe(output_pipe) < 0) {
-        return action;
-    }
-    child = fork();
-    if (child == 0) {
-        dup2(input_pipe[0], STDIN_FILENO);
-        dup2(output_pipe[1], STDOUT_FILENO);
-        close(input_pipe[0]);
-        close(input_pipe[1]);
-        close(output_pipe[0]);
-        close(output_pipe[1]);
-        execlp("python3", "python3", "ocean/nmmo3/llm_strategy.py", (char*)NULL);
-        _exit(127);
-    }
-    if (child < 0) {
-        close(input_pipe[0]);
-        close(input_pipe[1]);
-        close(output_pipe[0]);
-        close(output_pipe[1]);
-        return action;
-    }
-    close(input_pipe[0]);
-    close(output_pipe[1]);
-    (void)write(input_pipe[1], context.text, strlen(context.text));
-    (void)write(input_pipe[1], "\0", 1);
-    close(input_pipe[1]);
-    {
-        fd_set read_fds;
-        struct timeval timeout = {.tv_sec = qwen3_timeout_seconds, .tv_usec = 0};
-        FD_ZERO(&read_fds);
-        FD_SET(output_pipe[0], &read_fds);
-        if (select(output_pipe[0] + 1, &read_fds, NULL, NULL, &timeout) <= 0) {
-            kill(child, SIGKILL);
-            close(output_pipe[0]);
-            waitpid(child, &status, 0);
-            env->log.qwen3_failures += 1;
-            record_qwen3_action(&env->log, action);
-            RECORD_QWEN3_HISTORY("timeout");
-            return action;
-        }
-        bytes_read = read(output_pipe[0], response, sizeof(response) - 1);
-    }
-    close(output_pipe[0]);
-    waitpid(child, &status, 0);
-    if (bytes_read <= 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        env->log.qwen3_failures += 1;
-        record_qwen3_action(&env->log, action);
-        printf("Qwen3 unavailable; keeping previous group action: %s (%d)\n",
-            action_name(action), action);
-        RECORD_QWEN3_HISTORY("failed");
-        return action;
-    }
-    response[bytes_read] = '\0';
-    {
-        char* action_field = strstr(response, "\"action_code\"");
-        if (action_field) {
-            (void)sscanf(action_field, "\"action_code\"%*[^0-9]%d", &action);
-        }
-    }
-    if (action < ATN_DOWN || action > ATN_LEFT_SHIFT || action == 6) {
-        action = env->qwen3_current_action;
-    }
-    record_qwen3_action(&env->log, action);
-    RECORD_QWEN3_HISTORY("completed");
-    printf("Qwen3 recommended group action: tick=%d agents=%d action=%s (%d)\n",
-        env->tick, env->num_agents, action_name(action), action);
-    #undef RECORD_QWEN3_HISTORY
-    return action;
+    pthread_cond_signal(&qwen3_condition);
+    pthread_mutex_unlock(&qwen3_mutex);
+    return env->qwen3_current_action;
 }
