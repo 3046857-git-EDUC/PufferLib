@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <signal.h>
+#include <sys/select.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -239,6 +241,11 @@ int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
         StrategyResource* r = &context->resources[i];
         offset = append_text(context->text, offset, "item id=%d type=%d tier=%d rel=(%d,%d) dist=%d\n", r->item_id, r->type, r->tier, r->rel_r, r->rel_c, r->distance);
     }
+    offset = append_text(context->text, offset, "\nRECENT_STRATEGIES count=%d\n", env->qwen3_history_count);
+    for (int i = 0; i < env->qwen3_history_count; i++) {
+        int history_idx = (env->qwen3_history_next - env->qwen3_history_count + i + QWEN3_HISTORY_SIZE) % QWEN3_HISTORY_SIZE;
+        offset = append_text(context->text, offset, "%s\n", env->qwen3_history[history_idx]);
+    }
     offset = append_text(context->text, offset, "\nMARKET\nbuys=%d\nsells=%d\n", context->market_buys, context->market_sells);
     if (offset < 0) return -1;
     context->text[STRATEGY_CONTEXT_MAX - 1] = '\0';
@@ -254,6 +261,14 @@ int nmmo3_qwen3_action(MMO* env, int pid) {
     ssize_t bytes_read;
     int status;
     int action = env->qwen3_current_action;
+    const int qwen3_timeout_seconds = 15;
+
+    #define RECORD_QWEN3_HISTORY(result) do { \
+        snprintf(env->qwen3_history[env->qwen3_history_next], QWEN3_HISTORY_ENTRY_SIZE, \
+            "tick=%d action=%s (%d) result=%s", env->tick, action_name(action), action, result); \
+        env->qwen3_history_next = (env->qwen3_history_next + 1) % QWEN3_HISTORY_SIZE; \
+        if (env->qwen3_history_count < QWEN3_HISTORY_SIZE) env->qwen3_history_count += 1; \
+    } while (0)
 
     env->log.qwen3_decisions += 1;
 
@@ -282,8 +297,24 @@ int nmmo3_qwen3_action(MMO* env, int pid) {
     close(input_pipe[0]);
     close(output_pipe[1]);
     (void)write(input_pipe[1], context.text, strlen(context.text));
+    (void)write(input_pipe[1], "\0", 1);
     close(input_pipe[1]);
-    bytes_read = read(output_pipe[0], response, sizeof(response) - 1);
+    {
+        fd_set read_fds;
+        struct timeval timeout = {.tv_sec = qwen3_timeout_seconds, .tv_usec = 0};
+        FD_ZERO(&read_fds);
+        FD_SET(output_pipe[0], &read_fds);
+        if (select(output_pipe[0] + 1, &read_fds, NULL, NULL, &timeout) <= 0) {
+            kill(child, SIGKILL);
+            close(output_pipe[0]);
+            waitpid(child, &status, 0);
+            env->log.qwen3_failures += 1;
+            record_qwen3_action(&env->log, action);
+            RECORD_QWEN3_HISTORY("timeout");
+            return action;
+        }
+        bytes_read = read(output_pipe[0], response, sizeof(response) - 1);
+    }
     close(output_pipe[0]);
     waitpid(child, &status, 0);
     if (bytes_read <= 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
@@ -291,6 +322,7 @@ int nmmo3_qwen3_action(MMO* env, int pid) {
         record_qwen3_action(&env->log, action);
         printf("Qwen3 unavailable; keeping previous group action: %s (%d)\n",
             action_name(action), action);
+        RECORD_QWEN3_HISTORY("failed");
         return action;
     }
     response[bytes_read] = '\0';
@@ -304,7 +336,9 @@ int nmmo3_qwen3_action(MMO* env, int pid) {
         action = env->qwen3_current_action;
     }
     record_qwen3_action(&env->log, action);
+    RECORD_QWEN3_HISTORY("completed");
     printf("Qwen3 recommended group action: tick=%d agents=%d action=%s (%d)\n",
         env->tick, env->num_agents, action_name(action), action);
+    #undef RECORD_QWEN3_HISTORY
     return action;
 }

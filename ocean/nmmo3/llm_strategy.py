@@ -92,7 +92,17 @@ ACTION: <action>
 
 
 def main():
-    context = sys.stdin.read()
+    chunks = []
+    while True:
+        chunk = sys.stdin.buffer.read(4096)
+        if not chunk:
+            break
+        if b"\0" in chunk:
+            before, _separator, _after = chunk.partition(b"\0")
+            chunks.append(before)
+            break
+        chunks.append(chunk)
+    context = b"".join(chunks).decode()
     if not context.strip():
         raise SystemExit("empty NMMO3 strategy context")
     try:

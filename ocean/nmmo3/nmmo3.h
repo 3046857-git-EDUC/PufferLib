@@ -595,6 +595,8 @@ void init_items() {
 }
 
 #define MAX_MARKET_OFFERS 32
+#define QWEN3_HISTORY_SIZE 4
+#define QWEN3_HISTORY_ENTRY_SIZE 96
 
 typedef struct MarketOffer MarketOffer;
 struct MarketOffer {
@@ -734,6 +736,9 @@ struct MMO {
     float reward_market;
     float reward_death;
     int qwen3_current_action;
+    char qwen3_history[QWEN3_HISTORY_SIZE][QWEN3_HISTORY_ENTRY_SIZE];
+    int qwen3_history_count;
+    int qwen3_history_next;
 };
 
 Entity* get_entity(MMO* env, int pid) {
@@ -781,6 +786,9 @@ void add_player_log(MMO* env, int pid) {
 void init(MMO* env) {
     init_items();
     env->qwen3_current_action = ATN_NOOP;
+    env->qwen3_history_count = 0;
+    env->qwen3_history_next = 0;
+    memset(env->qwen3_history, 0, sizeof(env->qwen3_history));
 
     int sz = env->width*env->height;
     env->counts = calloc(sz, sizeof(unsigned char));
