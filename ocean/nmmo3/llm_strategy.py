@@ -3,14 +3,16 @@
 
 import json
 import sys
+import fcntl
 import http.client
 import os
 import urllib.request
 import urllib.error
 
-OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+OLLAMA_URL = os.getenv("NMMO3_QWEN3_URL", "http://127.0.0.1:11434/api/generate")
 MODEL = os.getenv("NMMO3_QWEN3_MODEL", "qwen3:4b-thinking")
 REQUEST_TIMEOUT = float(os.getenv("NMMO3_QWEN3_TIMEOUT", "180"))
+CONNECTION_RETRIES = 3
 ACTION_MAP = {
     "MOVE_DOWN": 0,
     "MOVE_UP": 1,
@@ -149,8 +151,21 @@ INPUT CONTEXT
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
-        payload = json.load(response)
+    with open("/tmp/nmmo3-qwen3.lock", "w") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        for attempt in range(CONNECTION_RETRIES):
+            try:
+                with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+                    payload = json.load(response)
+                break
+            except urllib.error.URLError as error:
+                refused = isinstance(error.reason, ConnectionRefusedError)
+                if not refused or attempt == CONNECTION_RETRIES - 1:
+                    raise
+                import time
+                time.sleep(2 ** attempt)
+        else:
+            raise urllib.error.URLError("Ollama connection retry limit reached")
     return parse_strategy_response(payload.get("response", ""))
 
 
@@ -168,7 +183,6 @@ def main():
         ValueError,
         json.JSONDecodeError,
     ) as error:
-        print(f"Qwen3 request failed: {error}", file=sys.stderr)
         raise SystemExit(1)
     print(json.dumps(result))
 

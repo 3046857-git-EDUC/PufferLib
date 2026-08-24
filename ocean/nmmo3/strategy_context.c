@@ -257,9 +257,16 @@ int nmmo3_qwen3_strategy(MMO* env, int pid) {
                         break;
                     }
                 }
-                if (found) return 1;
+                if (found) {
+                    env->log.qwen3_strategy_updates += 1;
+                    printf("\r\033[2KQwen3 strategy update applied at tick %d", env->tick);
+                    fflush(stdout);
+                    return 1;
+                }
             }
             env->log.qwen3_failures += 1;
+            printf("\r\033[2KQwen3 strategy update failed; next update will be attempted at the next interval.");
+            fflush(stdout);
         }
         return 0;
     }

@@ -243,12 +243,7 @@ struct Log {
     float c;
     float qwen3_decisions;
     float qwen3_failures;
-    float qwen3_move_actions;
-    float qwen3_attack_actions;
-    float qwen3_item_actions;
-    float qwen3_market_actions;
-    float qwen3_noop_actions;
-    float qwen3_shift_actions;
+    float qwen3_strategy_updates;
     float alive_agents;
     float dead_agents;
 };
