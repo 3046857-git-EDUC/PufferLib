@@ -194,7 +194,7 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
     run_id = str(int(1000*time.time()))
     if args['wandb']:
         import wandb
-        run_id = wandb.util.generate_id()
+        run_id = wandb.sdk.lib.runid.generate_id()
         wandb.init(id=run_id, config=args,
             project=args['wandb_project'], group=args['wandb_group'],
             tags=[args['tag']] if args['tag'] is not None else [],
