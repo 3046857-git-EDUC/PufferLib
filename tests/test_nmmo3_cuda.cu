@@ -20,7 +20,7 @@ void nmmo3_test_init(int B) {
         free(g_a);
     }
     g_enc = {};
-    g_enc.in_dim = 1707;
+    g_enc.in_dim = 1771;
     g_enc.out_dim = 512;
     create_custom_encoder("puffer_nmmo3", &g_enc);
 
@@ -51,7 +51,7 @@ void nmmo3_test_set_weights(void* c1w, void* c1b, void* c2w, void* c2b,
 
 // Forward: obs and output are device float ptrs
 void nmmo3_test_forward(void* output, void* obs, int B) {
-    PrecisionTensor input = {.data = (precision_t*)obs, .shape = {B, 1707}};
+    PrecisionTensor input = {.data = (precision_t*)obs, .shape = {B, 1771}};
     PrecisionTensor result = g_enc.forward(g_w, g_a, input, 0);
     cudaMemcpy(output, result.data, B * 512 * sizeof(float), cudaMemcpyDeviceToDevice);
     cudaDeviceSynchronize();

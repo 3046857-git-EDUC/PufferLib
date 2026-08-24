@@ -16,6 +16,10 @@
 #include <math.h>
 #include <float.h>
 #include <stdbool.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <assert.h>
 #include <time.h>
 #include <limits.h>
@@ -597,6 +601,7 @@ void init_items() {
 #define MAX_MARKET_OFFERS 32
 #define QWEN3_HISTORY_SIZE 4
 #define QWEN3_HISTORY_ENTRY_SIZE 96
+#define NMMO3_STRATEGY_DIM 64
 
 typedef struct MarketOffer MarketOffer;
 struct MarketOffer {
@@ -736,6 +741,11 @@ struct MMO {
     float reward_market;
     float reward_death;
     int qwen3_current_action;
+    unsigned char strategy_features[NMMO3_STRATEGY_DIM];
+    int qwen3_pid;
+    int qwen3_output_fd;
+    char qwen3_response[2048];
+    int qwen3_response_bytes;
     char qwen3_history[QWEN3_HISTORY_SIZE][QWEN3_HISTORY_ENTRY_SIZE];
     int qwen3_history_count;
     int qwen3_history_next;
@@ -786,6 +796,9 @@ void add_player_log(MMO* env, int pid) {
 void init(MMO* env) {
     init_items();
     env->qwen3_current_action = ATN_NOOP;
+    env->qwen3_pid = -1;
+    env->qwen3_output_fd = -1;
+    env->qwen3_response_bytes = 0;
     env->qwen3_history_count = 0;
     env->qwen3_history_next = 0;
     memset(env->qwen3_history, 0, sizeof(env->qwen3_history));
@@ -817,7 +830,7 @@ void init(MMO* env) {
 
 void allocate_mmo(MMO* env) {
     // TODO: Not hardcode
-    env->observations = calloc(env->num_agents*(11*15*10+47+10), sizeof(unsigned char));
+    env->observations = calloc(env->num_agents*(11*15*10+47+10+NMMO3_STRATEGY_DIM), sizeof(unsigned char));
     env->rewards = calloc(env->num_agents, sizeof(float));
     env->terminals = calloc(env->num_agents, sizeof(float));
     env->actions = calloc(env->num_agents, sizeof(float));
@@ -825,6 +838,11 @@ void allocate_mmo(MMO* env) {
 }
 
 void c_close(MMO* env) {
+    if (env->qwen3_pid > 0) {
+        kill(env->qwen3_pid, SIGKILL);
+        waitpid(env->qwen3_pid, NULL, 0);
+    }
+    if (env->qwen3_output_fd >= 0) close(env->qwen3_output_fd);
     free(env->counts);
     free(env->terrain);
     free(env->rendered);
@@ -963,7 +981,7 @@ void compute_all_obs(MMO* env) {
         assert(end_col <= env->width);
 
         int comb_lvl = player->comb_lvl;
-        int obs_adr = pid*(11*15*10+47+10);
+        int obs_adr = pid*(11*15*10+47+10+NMMO3_STRATEGY_DIM);
         for (int obs_r = start_row; obs_r < end_row; obs_r++) {
             for (int obs_c = start_col; obs_c < end_col; obs_c++) {
                 int map_adr = map_offset(env, obs_r, obs_c);
@@ -1039,6 +1057,10 @@ void compute_all_obs(MMO* env) {
         env->observations[obs_adr+53] = reward->item_tool_lvl / 20;
         env->observations[obs_adr+54] = reward->market_buy / 20;
         env->observations[obs_adr+55] = reward->market_sell / 20;
+
+        for (int j = 0; j < NMMO3_STRATEGY_DIM; j++) {
+            env->observations[obs_adr+56+j] = env->strategy_features[j];
+        }
     }
 }
 
@@ -1220,7 +1242,7 @@ inline bool dest_check(MMO* env, int r, int c) {
     return PASSABLE[(int)env->terrain[adr]] & (env->pids[adr] == -1);
 }
 
-int nmmo3_qwen3_action(MMO* env, int pid);
+int nmmo3_qwen3_strategy(MMO* env, int pid);
 
 void move(MMO* env, int pid, int direction, bool run) {
     Entity* entity = get_entity(env, pid);
@@ -1878,10 +1900,7 @@ void c_step(MMO* env) {
     }
     if (getenv("NMMO3_USE_QWEN3") != NULL && env->num_agents > 0) {
         if (tick % qwen3_interval == 0) {
-            env->qwen3_current_action = nmmo3_qwen3_action(env, 0);
-        }
-        for (int pid = 0; pid < env->num_agents; pid++) {
-            env->actions[pid] = env->qwen3_current_action;
+            (void)nmmo3_qwen3_strategy(env, 0);
         }
     }
 

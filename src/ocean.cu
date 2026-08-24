@@ -9,7 +9,7 @@
 static constexpr int N3_MAP_H = 11, N3_MAP_W = 15, N3_NFEAT = 10;
 static constexpr int N3_MULTIHOT = 59;
 static constexpr int N3_MAP_SIZE = N3_MAP_H * N3_MAP_W * N3_NFEAT;
-static constexpr int N3_PLAYER = 47, N3_REWARD = 10;
+static constexpr int N3_PLAYER = 47, N3_REWARD = 10, N3_STRATEGY = 64;
 static constexpr int N3_EMBED_DIM = 32, N3_EMBED_VOCAB = 128;
 static constexpr int N3_PLAYER_EMBED = N3_PLAYER * N3_EMBED_DIM;
 static constexpr int N3_C1_IC = 59, N3_C1_OC = 128, N3_C1_K = 5, N3_C1_S = 3;
@@ -17,7 +17,7 @@ static constexpr int N3_C1_OH = 3, N3_C1_OW = 4;
 static constexpr int N3_C2_IC = 128, N3_C2_OC = 128, N3_C2_K = 3, N3_C2_S = 1;
 static constexpr int N3_C2_OH = 1, N3_C2_OW = 2;
 static constexpr int N3_CONV_FLAT = N3_C2_OC * N3_C2_OH * N3_C2_OW;
-static constexpr int N3_CONCAT = N3_CONV_FLAT + N3_PLAYER_EMBED + N3_PLAYER + N3_REWARD;
+static constexpr int N3_CONCAT = N3_CONV_FLAT + N3_PLAYER_EMBED + N3_PLAYER + N3_REWARD + N3_STRATEGY;
 
 __constant__ int N3_OFFSETS[10] = {0, 4, 8, 25, 30, 33, 38, 43, 48, 55};
 
@@ -67,8 +67,11 @@ __global__ void n3_concat_kernel(
         val = embed[b * N3_PLAYER_EMBED + (c - N3_CONV_FLAT)];
     else if (c < N3_CONV_FLAT + N3_PLAYER_EMBED + N3_PLAYER)
         val = obs[b * obs_size + N3_MAP_SIZE + (c - N3_CONV_FLAT - N3_PLAYER_EMBED)];
-    else
+    else if (c < N3_CONV_FLAT + N3_PLAYER_EMBED + N3_PLAYER + N3_REWARD)
         val = obs[b * obs_size + obs_size - N3_REWARD + (c - N3_CONV_FLAT - N3_PLAYER_EMBED - N3_PLAYER)];
+    else
+        val = obs[b * obs_size + obs_size - N3_STRATEGY +
+            (c - N3_CONV_FLAT - N3_PLAYER_EMBED - N3_PLAYER - N3_REWARD)];
     out[idx] = val;
 }
 
