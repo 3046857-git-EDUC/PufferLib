@@ -4,11 +4,13 @@
 import json
 import sys
 import http.client
+import os
 import urllib.request
 import urllib.error
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-MODEL = "qwen3"
+MODEL = os.getenv("NMMO3_QWEN3_MODEL", "qwen3:4b-thinking")
+REQUEST_TIMEOUT = float(os.getenv("NMMO3_QWEN3_TIMEOUT", "180"))
 ACTION_MAP = {
     "MOVE_DOWN": 0,
     "MOVE_UP": 1,
@@ -38,6 +40,10 @@ ACTION_MAP = {
 
 
 def parse_strategy_response(response_text):
+    response_text = response_text.strip()
+    if response_text.startswith("```"):
+        response_text = response_text.split("\n", 1)[-1]
+        response_text = response_text.rsplit("```", 1)[0].strip()
     permitted_strategies = {
         "explore", "harvest", "equip", "trade", "engage_NPC",
         "avoid_combat", "retreat", "recover",
@@ -133,11 +139,17 @@ INPUT CONTEXT
             "think": False,
             "temperature": 0.2,
             "keep_alive": "10m",
+            "format": "json",
+            "options": {
+                "num_ctx": 2048,
+                "num_predict": 512,
+                "temperature": 0.2,
+            },
         }).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
         payload = json.load(response)
     return parse_strategy_response(payload.get("response", ""))
 

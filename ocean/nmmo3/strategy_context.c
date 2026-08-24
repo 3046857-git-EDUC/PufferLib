@@ -14,6 +14,8 @@ static int abs_int(int value) {
     return value < 0 ? -value : value;
 }
 
+static MMO* qwen3_active_env = NULL;
+
 static int distance_between(int r1, int c1, int r2, int c2) {
     return abs_int(r1 - r2) + abs_int(c1 - c2);
 }
@@ -216,6 +218,7 @@ int nmmo3_qwen3_strategy(MMO* env, int pid) {
             close(env->qwen3_output_fd);
             env->qwen3_output_fd = -1;
             env->qwen3_pid = -1;
+            qwen3_active_env = NULL;
             env->qwen3_response[env->qwen3_response_bytes] = '\0';
             if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
                 static const char* names[8] = {
@@ -261,6 +264,8 @@ int nmmo3_qwen3_strategy(MMO* env, int pid) {
         return 0;
     }
 
+    if (qwen3_active_env != NULL) return 0;
+
     if (build_strategy_context(env, pid, &context) < 0 ||
         pipe(input_pipe) < 0 || pipe(output_pipe) < 0) return 0;
     env->log.qwen3_decisions += 1;
@@ -288,6 +293,7 @@ int nmmo3_qwen3_strategy(MMO* env, int pid) {
     close(input_pipe[1]);
     (void)fcntl(output_pipe[0], F_SETFL, fcntl(output_pipe[0], F_GETFL) | O_NONBLOCK);
     env->qwen3_pid = child;
+    qwen3_active_env = env;
     env->qwen3_output_fd = output_pipe[0];
     env->qwen3_response_bytes = 0;
     return 0;

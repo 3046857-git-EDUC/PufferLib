@@ -1890,7 +1890,7 @@ void c_step(MMO* env) {
     env->tick += 1;
     int tick = env->tick;
 
-    int qwen3_interval = 360;
+    int qwen3_interval = 720;
     const char* qwen3_interval_env = getenv("NMMO3_QWEN3_INTERVAL");
     if (qwen3_interval_env != NULL) {
         int configured_interval = atoi(qwen3_interval_env);
