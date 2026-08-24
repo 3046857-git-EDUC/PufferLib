@@ -605,7 +605,7 @@ def load_config(env_name):
     parser.add_argument('--slowly', action='store_true', help='Use PyTorch training backend')
     parser.add_argument('--ollama-strategy', action='store_true',
         help='Use Ollama/Qwen3 to override agent 0 actions in NMMO3')
-    parser.add_argument('--ollama-interval', type=int, default=360,
+    parser.add_argument('--ollama-interval', type=int, default=720,
         help='NMMO3 ticks between shared Qwen3 strategy decisions')
     parser.add_argument('--save-frames', type=int, default=0)
     parser.add_argument('--gif-path', type=str, default='eval.gif')

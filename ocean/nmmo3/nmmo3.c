@@ -44,8 +44,8 @@ MMONet* init_mmonet(Weights* weights, int num_agents) {
     net->map_relu = make_relu(num_agents, 128*3*4);
     net->map_conv2 = make_conv2d(weights, num_agents, 4, 3, 128, 128, 3, 1);
     net->player_embed = make_embedding(weights, num_agents*47, 128, 32);
-    net->proj_buffer = calloc(num_agents*1817, sizeof(float));
-    net->proj = make_affine(weights, num_agents, 1817, hidden);
+    net->proj_buffer = calloc(num_agents*1881, sizeof(float));
+    net->proj = make_affine(weights, num_agents, 1881, hidden);
     net->proj_relu = make_relu(num_agents, hidden);
     net->decoder = make_linear(weights, num_agents, hidden, 26 + 1);
     net->mingru = make_mingru(weights, num_agents, hidden, 4);
@@ -92,7 +92,7 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
     int factors[10] = {4, 4, 17, 5, 3, 5, 5, 5, 7, 4};
     float (*ob_map)[59][11][15] = (float (*)[59][11][15])net->ob_map;
     for (int b = 0; b < net->num_agents; b++) {
-        int b_offset = b*(11*15*10 + 47 + 10);
+        int b_offset = b*(11*15*10 + 47 + 10 + 64);
         for (int i = 0; i < 11; i++) {
             for (int j = 0; j < 15; j++) {
                 int f_offset = 0;
@@ -111,7 +111,7 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
     // Player embedding subnetwork
     for (int b = 0; b < net->num_agents; b++) {
         for (int i = 0; i < 47; i++) {
-            unsigned char ob = observations[b*(11*15*10 + 47 + 10) + 11*15*10 + i];
+            unsigned char ob = observations[b*(11*15*10 + 47 + 10 + 64) + 11*15*10 + i];
             net->ob_player_discrete[b*47 + i] = ob;
             net->ob_player_continuous[b*47 + i] = ob;
         }
@@ -121,12 +121,12 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
     // Rewards
     for (int b = 0; b < net->num_agents; b++) {
         for (int i = 0; i < 10; i++) {
-            net->ob_reward[b*10 + i] = observations[b*(11*15*10 + 47 + 10) + 11*15*10 + 47 + i];
+            net->ob_reward[b*10 + i] = observations[b*(11*15*10 + 47 + 10 + 64) + 11*15*10 + 47 + i];
         }
     }
 
     for (int b = 0; b < net->num_agents; b++) {
-        int b_offset = b*1817;
+        int b_offset = b*1881;
         for (int i = 0; i < 256; i++) {
             net->proj_buffer[b_offset + i] = net->map_conv2->output[b*256 + i];
         }
@@ -144,6 +144,10 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
         b_offset += 47;
         for (int i = 0; i < 10; i++) {
             net->proj_buffer[b_offset + i] = net->ob_reward[b*10 + i];
+        }
+        b_offset += 10;
+        for (int i = 0; i < 64; i++) {
+            net->proj_buffer[b_offset + i] = observations[b*(11*15*10 + 47 + 10 + 64) + 11*15*10 + 47 + 10 + i];
         }
     }
 

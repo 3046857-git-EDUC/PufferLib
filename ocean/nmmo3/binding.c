@@ -1,6 +1,6 @@
 #include "nmmo3.h"
 #include "strategy_context.c"
-#define OBS_SIZE 1707
+#define OBS_SIZE 1771
 #define NUM_ATNS 1
 #define ACT_SIZES {26}
 #define OBS_TENSOR_T ByteTensor
