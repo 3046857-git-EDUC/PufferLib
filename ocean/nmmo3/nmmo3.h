@@ -796,6 +796,7 @@ void init(MMO* env) {
     env->qwen3_response_bytes = 0;
     env->qwen3_history_count = 0;
     env->qwen3_history_next = 0;
+    memset(env->strategy_features, 0, sizeof(env->strategy_features));
     memset(env->qwen3_history, 0, sizeof(env->qwen3_history));
 
     int sz = env->width*env->height;
@@ -1894,7 +1895,7 @@ void c_step(MMO* env) {
         }
     }
     if (getenv("NMMO3_USE_QWEN3") != NULL && env->num_agents > 0) {
-        if (tick % qwen3_interval == 0) {
+        if (env->qwen3_pid > 0 || tick % qwen3_interval == 0) {
             (void)nmmo3_qwen3_strategy(env, 0);
         }
     }

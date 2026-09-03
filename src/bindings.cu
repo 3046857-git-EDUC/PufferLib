@@ -56,6 +56,37 @@ pybind11::dict puf_log(pybind11::object pufferl_obj) {
     cudaMemset(pufferl.losses_puf.data, 0, numel(pufferl.losses_puf.shape) * sizeof(float));
     result["loss"] = losses_dict;
 
+    if (!pufferl.is_continuous) {
+        int num_action_heads = pufferl.env.actions.shape[1];
+        int* action_sizes = get_act_sizes();
+        int num_samples = pufferl.rollouts.actions.shape[0] *
+            pufferl.rollouts.actions.shape[1];
+        int num_actions = numel(pufferl.rollouts.actions.shape);
+        std::vector<precision_t> actions_host(num_actions);
+        cudaMemcpy(actions_host.data(), pufferl.rollouts.actions.data,
+            num_actions * sizeof(precision_t), cudaMemcpyDeviceToHost);
+
+        pybind11::dict action_dict;
+        for (int head = 0; head < num_action_heads; head++) {
+            std::vector<int> counts(action_sizes[head], 0);
+            for (int sample = 0; sample < num_samples; sample++) {
+                int action = (int)to_float(actions_host[sample * num_action_heads + head]);
+                if (action >= 0 && action < action_sizes[head]) counts[action]++;
+            }
+            float entropy = 0.0f;
+            for (int action = 0; action < action_sizes[head]; action++) {
+                float fraction = counts[action] / (float)num_samples;
+                std::string key = "head_" + std::to_string(head) + "_action_" +
+                    std::to_string(action);
+                action_dict[pybind11::str(key + "_count")] = counts[action];
+                action_dict[pybind11::str(key + "_fraction")] = fraction;
+                if (fraction > 0.0f) entropy -= fraction * logf(fraction);
+            }
+            action_dict[pybind11::str("head_" + std::to_string(head) + "_entropy")] = entropy;
+        }
+        result["action"] = action_dict;
+    }
+
     // Profile
     pybind11::dict perf_dict;
     float train_total = 0;

@@ -47,6 +47,23 @@ def unroll_nested_dict(d):
         else:
             yield k, v
 
+def rename_nmmo3_action_logs(flat_logs):
+    action_names = {
+        0: 'move_down', 1: 'move_up', 2: 'move_right', 3: 'move_left',
+        4: 'noop', 5: 'attack', 6: 'unused_6', 7: 'ui',
+        8: 'use_item_1', 9: 'use_item_2', 10: 'use_item_3',
+        11: 'use_item_4', 12: 'use_item_5', 13: 'use_item_6',
+        14: 'use_item_7', 15: 'use_item_8', 16: 'use_item_9',
+        17: 'use_item_0', 18: 'use_item_minus', 19: 'use_item_equals',
+        20: 'buy', 21: 'sell', 22: 'sprint_down', 23: 'sprint_up',
+        24: 'sprint_right', 25: 'sprint_left',
+    }
+    for action, name in action_names.items():
+        for metric in ('count', 'fraction'):
+            key = f'action/head_0_action_{action}_{metric}'
+            if key in flat_logs:
+                flat_logs[f'action/{name}/{metric}'] = flat_logs.pop(key)
+
 def abbreviate(num, b2, c2):
     prefixes = ['', 'K', 'M', 'B', 'T']
     for i, prefix in enumerate(prefixes):
@@ -267,6 +284,8 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
 
         logs = backend.eval_log(pufferl) if epoch >= train_epochs else backend.log(pufferl)
         flat_logs = {**flat_logs, **dict(unroll_nested_dict(logs))}
+        if args['env_name'] == 'nmmo3':
+            rename_nmmo3_action_logs(flat_logs)
 
         if epoch < train_epochs:
             selfplay.step(pufferl, backend, pool_state, flat_logs, epoch)

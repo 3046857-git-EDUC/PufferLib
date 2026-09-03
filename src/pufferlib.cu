@@ -406,6 +406,17 @@ inline void profile_end(bool enable) {
     if (enable) nvtxRangePop();
 }
 
+inline void report_cuda_error(const char* operation, cudaError_t error,
+        int graph = -1, int buf = -1, int t = -1) {
+    if (graph >= 0) {
+        fprintf(stderr, "%s failed for graph=%d (buf=%d, t=%d): %s\n",
+            operation, graph, buf, t, cudaGetErrorString(error));
+    } else {
+        fprintf(stderr, "%s failed: %s\n", operation,
+            cudaGetErrorString(error));
+    }
+}
+
 // Thread-local stream for per-buffer threads (set once by thread_init_wrapper)
 static thread_local cudaStream_t tl_stream = 0;
 
@@ -634,8 +645,12 @@ extern "C" void net_callback_wrapper(void* ctx, int buf, int t) {
 
     cudaStream_t current_stream = tl_stream;
     if (pufferl->rollout_captured) {
-        assert(cudaGraphLaunch(pufferl->fused_rollout_cudagraphs[graph], current_stream) == cudaSuccess
-                && "cudaGraphLaunch failed");
+        cudaError_t error = cudaGraphLaunch(
+            pufferl->fused_rollout_cudagraphs[graph], current_stream);
+        if (error != cudaSuccess) {
+            report_cuda_error("cudaGraphLaunch", error, graph, buf, t);
+            abort();
+        }
         profile_end(hypers.profile);
         return;
     }
@@ -746,11 +761,23 @@ extern "C" void net_callback_wrapper(void* ctx, int buf, int t) {
 
     if (capturing) {
         cudaGraph_t _graph;
-        assert(cudaStreamEndCapture(current_stream, &_graph) == cudaSuccess
-                && "cudaStreamEndCapture failed");
-        assert(cudaGraphInstantiate(&pufferl->fused_rollout_cudagraphs[graph], _graph, 0) == cudaSuccess
-                && "cudaGraphInstantiate failed");
-        assert(cudaGraphDestroy(_graph) == cudaSuccess && "cudaGraphDestroy failed");
+        cudaError_t error = cudaStreamEndCapture(current_stream, &_graph);
+        if (error != cudaSuccess) {
+            report_cuda_error("cudaStreamEndCapture", error, graph, buf, t);
+            abort();
+        }
+        error = cudaGraphInstantiate(&pufferl->fused_rollout_cudagraphs[graph],
+            _graph, 0);
+        if (error != cudaSuccess) {
+            report_cuda_error("cudaGraphInstantiate", error, graph, buf, t);
+            cudaGraphDestroy(_graph);
+            abort();
+        }
+        error = cudaGraphDestroy(_graph);
+        if (error != cudaSuccess) {
+            report_cuda_error("cudaGraphDestroy", error, graph, buf, t);
+            abort();
+        }
         cudaDeviceSynchronize();
     }
     profile_end(hypers.profile);
