@@ -144,7 +144,7 @@ INPUT CONTEXT
             "format": "json",
             "options": {
                 "num_ctx": 2048,
-                "num_predict": 512,
+                "num_predict": 256,
                 "temperature": 0.2,
             },
         }).encode(),
