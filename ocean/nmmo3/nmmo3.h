@@ -241,9 +241,9 @@ struct Log {
     float equip_defense;
     float r;
     float c;
-    float qwen3_decisions;
-    float qwen3_failures;
-    float qwen3_strategy_updates;
+    float strategy_decisions;
+    float strategy_failures;
+    float strategy_updates;
     float alive_agents;
     float dead_agents;
 };
@@ -594,8 +594,10 @@ void init_items() {
 }
 
 #define MAX_MARKET_OFFERS 32
-#define QWEN3_HISTORY_SIZE 4
-#define QWEN3_HISTORY_ENTRY_SIZE 96
+#define STRATEGY_HISTORY_SIZE 4
+#define STRATEGY_HISTORY_ENTRY_SIZE 96
+#define QWEN3_HISTORY_SIZE STRATEGY_HISTORY_SIZE
+#define QWEN3_HISTORY_ENTRY_SIZE STRATEGY_HISTORY_ENTRY_SIZE
 #define NMMO3_STRATEGY_DIM 64
 
 typedef struct MarketOffer MarketOffer;
@@ -735,15 +737,15 @@ struct MMO {
     float reward_item_level;
     float reward_market;
     float reward_death;
-    int qwen3_current_action;
+    int strategy_current_action;
     unsigned char strategy_features[NMMO3_STRATEGY_DIM];
-    int qwen3_pid;
-    int qwen3_output_fd;
-    char qwen3_response[2048];
-    int qwen3_response_bytes;
-    char qwen3_history[QWEN3_HISTORY_SIZE][QWEN3_HISTORY_ENTRY_SIZE];
-    int qwen3_history_count;
-    int qwen3_history_next;
+    int strategy_pid;
+    int strategy_output_fd;
+    char strategy_response[2048];
+    int strategy_response_bytes;
+    char strategy_history[STRATEGY_HISTORY_SIZE][STRATEGY_HISTORY_ENTRY_SIZE];
+    int strategy_history_count;
+    int strategy_history_next;
 };
 
 Entity* get_entity(MMO* env, int pid) {
@@ -790,14 +792,14 @@ void add_player_log(MMO* env, int pid) {
 
 void init(MMO* env) {
     init_items();
-    env->qwen3_current_action = ATN_NOOP;
-    env->qwen3_pid = -1;
-    env->qwen3_output_fd = -1;
-    env->qwen3_response_bytes = 0;
-    env->qwen3_history_count = 0;
-    env->qwen3_history_next = 0;
+    env->strategy_current_action = ATN_NOOP;
+    env->strategy_pid = -1;
+    env->strategy_output_fd = -1;
+    env->strategy_response_bytes = 0;
+    env->strategy_history_count = 0;
+    env->strategy_history_next = 0;
     memset(env->strategy_features, 0, sizeof(env->strategy_features));
-    memset(env->qwen3_history, 0, sizeof(env->qwen3_history));
+    memset(env->strategy_history, 0, sizeof(env->strategy_history));
 
     int sz = env->width*env->height;
     env->counts = calloc(sz, sizeof(unsigned char));
@@ -834,11 +836,11 @@ void allocate_mmo(MMO* env) {
 }
 
 void c_close(MMO* env) {
-    if (env->qwen3_pid > 0) {
-        kill(env->qwen3_pid, SIGKILL);
-        waitpid(env->qwen3_pid, NULL, 0);
+    if (env->strategy_pid > 0) {
+        kill(env->strategy_pid, SIGKILL);
+        waitpid(env->strategy_pid, NULL, 0);
     }
-    if (env->qwen3_output_fd >= 0) close(env->qwen3_output_fd);
+    if (env->strategy_output_fd >= 0) close(env->strategy_output_fd);
     free(env->counts);
     free(env->terrain);
     free(env->rendered);
@@ -1238,7 +1240,8 @@ inline bool dest_check(MMO* env, int r, int c) {
     return PASSABLE[(int)env->terrain[adr]] & (env->pids[adr] == -1);
 }
 
-int nmmo3_qwen3_strategy(MMO* env, int pid);
+int nmmo3_strategy_step(MMO* env, int pid);
+#define nmmo3_qwen3_strategy nmmo3_strategy_step
 
 void move(MMO* env, int pid, int direction, bool run) {
     Entity* entity = get_entity(env, pid);
@@ -1886,17 +1889,24 @@ void c_step(MMO* env) {
     env->tick += 1;
     int tick = env->tick;
 
-    int qwen3_interval = 720;
-    const char* qwen3_interval_env = getenv("NMMO3_QWEN3_INTERVAL");
-    if (qwen3_interval_env != NULL) {
-        int configured_interval = atoi(qwen3_interval_env);
+    int strategy_interval = 720;
+    const char* strategy_interval_env = getenv("NMMO3_STRATEGY_INTERVAL");
+    if (strategy_interval_env == NULL) {
+        strategy_interval_env = getenv("NMMO3_QWEN3_INTERVAL");
+    }
+    if (strategy_interval_env != NULL) {
+        int configured_interval = atoi(strategy_interval_env);
         if (configured_interval > 0) {
-            qwen3_interval = configured_interval;
+            strategy_interval = configured_interval;
         }
     }
-    if (getenv("NMMO3_USE_QWEN3") != NULL && env->num_agents > 0) {
-        if (env->qwen3_pid > 0 || tick % qwen3_interval == 0) {
-            (void)nmmo3_qwen3_strategy(env, 0);
+    const char* use_strategy = getenv("NMMO3_USE_STRATEGY");
+    const char* use_qwen3 = getenv("NMMO3_USE_QWEN3");
+    bool strategy_enabled = (use_strategy != NULL && (strcmp(use_strategy, "1") == 0 || strcmp(use_strategy, "true") == 0)) ||
+                           (use_qwen3 != NULL && (strcmp(use_qwen3, "1") == 0 || strcmp(use_qwen3, "true") == 0));
+    if (strategy_enabled && env->num_agents > 0) {
+        if (env->strategy_pid > 0 || tick % strategy_interval == 0) {
+            (void)nmmo3_strategy_step(env, 0);
         }
     }
 

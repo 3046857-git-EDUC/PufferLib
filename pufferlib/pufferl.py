@@ -626,6 +626,14 @@ def load_config(env_name):
         help='Use Ollama/Qwen3 to override agent 0 actions in NMMO3')
     parser.add_argument('--ollama-interval', type=int, default=720,
         help='NMMO3 ticks between shared Qwen3 strategy decisions')
+    parser.add_argument('--gemini-strategy', action='store_true',
+        help='Use Google Gemini to provide high-level strategy decisions in NMMO3')
+    parser.add_argument('--gemini-interval', type=int, default=720,
+        help='NMMO3 ticks between shared Gemini strategy decisions')
+    parser.add_argument('--gpt-strategy', action='store_true',
+        help='Use OpenAI GPT to provide high-level strategy decisions in NMMO3')
+    parser.add_argument('--gpt-interval', type=int, default=720,
+        help='NMMO3 ticks between shared GPT strategy decisions')
     parser.add_argument('--save-frames', type=int, default=0)
     parser.add_argument('--gif-path', type=str, default='eval.gif')
     parser.add_argument('--fps', type=float, default=15)
@@ -690,14 +698,85 @@ def main():
     env_name = sys.argv.pop(1)
     args = load_config(env_name)
 
+    strategy_count = sum(bool(args.get(k)) for k in ('ollama_strategy', 'gemini_strategy', 'gpt_strategy'))
+    if strategy_count > 1:
+        raise ValueError('Can only specify at most one of --ollama-strategy, --gemini-strategy, or --gpt-strategy')
+
     if args.get('ollama_strategy'):
         if env_name != 'nmmo3':
             raise ValueError('--ollama-strategy is only supported for nmmo3')
         if args['ollama_interval'] <= 0:
             raise ValueError('--ollama-interval must be positive')
+        os.environ['NMMO3_USE_STRATEGY'] = '1'
+        os.environ['NMMO3_STRATEGY_BACKEND'] = 'ollama'
+        os.environ['NMMO3_STRATEGY_SCRIPT'] = 'ocean/nmmo3/llm_strategy.py'
+        os.environ['NMMO3_STRATEGY_INTERVAL'] = str(args['ollama_interval'])
+        # Backward-compatibility environment variables
         os.environ['NMMO3_USE_QWEN3'] = '1'
         os.environ['NMMO3_QWEN3_INTERVAL'] = str(args['ollama_interval'])
-        print(f'Qwen3 group strategy enabled: one decision every {args["ollama_interval"]} ticks')
+        print(f'Ollama/Qwen3 group strategy enabled: one decision every {args["ollama_interval"]} ticks')
+
+    if args.get('gemini_strategy'):
+        if env_name != 'nmmo3':
+            raise ValueError('--gemini-strategy is only supported for nmmo3')
+        if args['gemini_interval'] <= 0:
+            raise ValueError('--gemini-interval must be positive')
+        gemini_key = os.getenv('GEMINI_API_KEY')
+        if not gemini_key or gemini_key.startswith('your_') or gemini_key.startswith('AIzaSyYourActual'):
+            env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), '.env')
+            if os.path.isfile(env_file):
+                with open(env_file) as f:
+                    for line in f:
+                        if line.strip().startswith('GEMINI_API_KEY='):
+                            val = line.strip().split('=', 1)[1].strip().strip('\'"')
+                            if val and not val.startswith('your_') and not val.startswith('AIzaSyYourActual'):
+                                gemini_key = val
+                                os.environ['GEMINI_API_KEY'] = val
+                                break
+        if not gemini_key or gemini_key.startswith('your_') or gemini_key.startswith('AIzaSyYourActual'):
+            raise ValueError(
+                'GEMINI_API_KEY environment variable (or .env file) is required when using --gemini-strategy. '
+                'Please set a valid Gemini API key from https://aistudio.google.com/app/apikey'
+            )
+        os.environ['NMMO3_USE_STRATEGY'] = '1'
+        os.environ['NMMO3_STRATEGY_BACKEND'] = 'gemini'
+        os.environ['NMMO3_STRATEGY_SCRIPT'] = 'ocean/nmmo3/gemini_strategy.py'
+        os.environ['NMMO3_STRATEGY_INTERVAL'] = str(args['gemini_interval'])
+        # Clear legacy Qwen3-specific flag
+        os.environ['NMMO3_USE_QWEN3'] = '0'
+        os.environ['NMMO3_QWEN3_INTERVAL'] = str(args['gemini_interval'])
+        print(f'Gemini group strategy enabled: one decision every {args["gemini_interval"]} ticks')
+
+    if args.get('gpt_strategy'):
+        if env_name != 'nmmo3':
+            raise ValueError('--gpt-strategy is only supported for nmmo3')
+        if args['gpt_interval'] <= 0:
+            raise ValueError('--gpt-interval must be positive')
+        openai_key = os.getenv('OPENAI_API_KEY')
+        if not openai_key or openai_key.startswith('your_') or openai_key.startswith('sk-YourActual'):
+            env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), '.env')
+            if os.path.isfile(env_file):
+                with open(env_file) as f:
+                    for line in f:
+                        if line.strip().startswith('OPENAI_API_KEY='):
+                            val = line.strip().split('=', 1)[1].strip().strip('\'"')
+                            if val and not val.startswith('your_') and not val.startswith('sk-YourActual'):
+                                openai_key = val
+                                os.environ['OPENAI_API_KEY'] = val
+                                break
+        if not openai_key or openai_key.startswith('your_') or openai_key.startswith('sk-YourActual'):
+            raise ValueError(
+                'OPENAI_API_KEY environment variable (or .env file) is required when using --gpt-strategy. '
+                'Please set a valid OpenAI API key from https://platform.openai.com/api-keys'
+            )
+        os.environ['NMMO3_USE_STRATEGY'] = '1'
+        os.environ['NMMO3_STRATEGY_BACKEND'] = 'openai-gpt'
+        os.environ['NMMO3_STRATEGY_SCRIPT'] = 'ocean/nmmo3/gpt_strategy.py'
+        os.environ['NMMO3_STRATEGY_INTERVAL'] = str(args['gpt_interval'])
+        # Clear legacy Qwen3-specific flag
+        os.environ['NMMO3_USE_QWEN3'] = '0'
+        os.environ['NMMO3_QWEN3_INTERVAL'] = str(args['gpt_interval'])
+        print(f'OpenAI GPT group strategy enabled: one decision every {args["gpt_interval"]} ticks')
 
     if 'train' in mode:
         train(env_name=env_name, args=args)

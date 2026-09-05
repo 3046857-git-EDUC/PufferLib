@@ -50,9 +50,9 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "equip_defense", log->equip_defense);
     dict_set(out, "r", log->r);
     dict_set(out, "c", log->c);
-    dict_set(out, "qwen3_decisions", log->qwen3_decisions);
-    dict_set(out, "qwen3_failures", log->qwen3_failures);
-    dict_set(out, "qwen3_strategy_updates", log->qwen3_strategy_updates);
+    dict_set(out, "strategy_decisions", log->strategy_decisions);
+    dict_set(out, "strategy_failures", log->strategy_failures);
+    dict_set(out, "strategy_updates", log->strategy_updates);
     dict_set(out, "alive_agents", log->alive_agents);
     dict_set(out, "dead_agents", log->dead_agents);
 }

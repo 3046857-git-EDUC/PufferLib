@@ -14,7 +14,7 @@ static int abs_int(int value) {
     return value < 0 ? -value : value;
 }
 
-static MMO* qwen3_active_env = NULL;
+static MMO* strategy_active_env = NULL;
 
 static int distance_between(int r1, int c1, int r2, int c2) {
     return abs_int(r1 - r2) + abs_int(c1 - c2);
@@ -181,10 +181,10 @@ int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
         StrategyResource* r = &context->resources[i];
         offset = append_text(context->text, offset, "item id=%d type=%d tier=%d rel=(%d,%d) dist=%d\n", r->item_id, r->type, r->tier, r->rel_r, r->rel_c, r->distance);
     }
-    offset = append_text(context->text, offset, "\nRECENT_STRATEGIES count=%d\n", env->qwen3_history_count);
-    for (int i = 0; i < env->qwen3_history_count; i++) {
-        int history_idx = (env->qwen3_history_next - env->qwen3_history_count + i + QWEN3_HISTORY_SIZE) % QWEN3_HISTORY_SIZE;
-        offset = append_text(context->text, offset, "%s\n", env->qwen3_history[history_idx]);
+    offset = append_text(context->text, offset, "\nRECENT_STRATEGIES count=%d\n", env->strategy_history_count);
+    for (int i = 0; i < env->strategy_history_count; i++) {
+        int history_idx = (env->strategy_history_next - env->strategy_history_count + i + STRATEGY_HISTORY_SIZE) % STRATEGY_HISTORY_SIZE;
+        offset = append_text(context->text, offset, "%s\n", env->strategy_history[history_idx]);
     }
     offset = append_text(context->text, offset, "\nMARKET\nbuys=%d\nsells=%d\n", context->market_buys, context->market_sells);
     if (offset < 0) return -1;
@@ -203,23 +203,23 @@ static int parse_strategy_value(const char* response, const char* key, float* va
     return *value >= 0.0f && *value <= 1.0f;
 }
 
-int nmmo3_qwen3_strategy(MMO* env, int pid) {
+int nmmo3_strategy_step(MMO* env, int pid) {
     int input_pipe[2], output_pipe[2], status;
     pid_t child;
     StrategyContext context;
     ssize_t bytes_read;
 
-    if (env->qwen3_pid > 0) {
-        bytes_read = read(env->qwen3_output_fd,
-            env->qwen3_response + env->qwen3_response_bytes,
-            sizeof(env->qwen3_response) - 1 - env->qwen3_response_bytes);
-        if (bytes_read > 0) env->qwen3_response_bytes += (int)bytes_read;
-        if (waitpid(env->qwen3_pid, &status, WNOHANG) == env->qwen3_pid) {
-            close(env->qwen3_output_fd);
-            env->qwen3_output_fd = -1;
-            env->qwen3_pid = -1;
-            qwen3_active_env = NULL;
-            env->qwen3_response[env->qwen3_response_bytes] = '\0';
+    if (env->strategy_pid > 0) {
+        bytes_read = read(env->strategy_output_fd,
+            env->strategy_response + env->strategy_response_bytes,
+            sizeof(env->strategy_response) - 1 - env->strategy_response_bytes);
+        if (bytes_read > 0) env->strategy_response_bytes += (int)bytes_read;
+        if (waitpid(env->strategy_pid, &status, WNOHANG) == env->strategy_pid) {
+            close(env->strategy_output_fd);
+            env->strategy_output_fd = -1;
+            env->strategy_pid = -1;
+            strategy_active_env = NULL;
+            env->strategy_response[env->strategy_response_bytes] = '\0';
             if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
                 static const char* names[8] = {
                     "explore", "harvest", "equip", "trade",
@@ -234,7 +234,7 @@ int nmmo3_qwen3_strategy(MMO* env, int pid) {
                 float value;
                 int found = 0;
                 const char* strategy_parameters = strstr(
-                    env->qwen3_response, "\"strategy_parameters\"");
+                    env->strategy_response, "\"strategy_parameters\"");
                 memset(env->strategy_features, 0, sizeof(env->strategy_features));
                 for (int i = 0; i < 8; i++) {
                     if (strategy_parameters != NULL &&
@@ -244,7 +244,7 @@ int nmmo3_qwen3_strategy(MMO* env, int pid) {
                     }
                 }
                 for (int i = 0; i < 10; i++) {
-                    if (parse_strategy_value(env->qwen3_response, scalar_keys[i], &value)) {
+                    if (parse_strategy_value(env->strategy_response, scalar_keys[i], &value)) {
                         env->strategy_features[8 + i] = (unsigned char)(value * 255.0f + 0.5f);
                         found = 1;
                     }
@@ -252,39 +252,47 @@ int nmmo3_qwen3_strategy(MMO* env, int pid) {
                 for (int i = 0; i < 8; i++) {
                     char expected[64];
                     snprintf(expected, sizeof(expected), "\"strategy_id\": \"%s\"", names[i]);
-                    if (strstr(env->qwen3_response, expected) != NULL) {
+                    if (strstr(env->strategy_response, expected) != NULL) {
                         env->strategy_features[18 + i] = 255;
                         break;
                     }
                 }
                 if (found) {
-                    env->log.qwen3_strategy_updates += 1;
-                    printf("\r\033[2KQwen3 strategy update applied at tick %d", env->tick);
+                    env->log.strategy_updates += 1;
+                    const char* backend = getenv("NMMO3_STRATEGY_BACKEND");
+                    const char* backend_name = backend ? backend : "LLM";
+                    printf("\r\033[2K[%s] strategy update applied at tick %d", backend_name, env->tick);
                     fflush(stdout);
                     return 1;
                 }
             }
-            env->log.qwen3_failures += 1;
-            printf("\r\033[2KQwen3 strategy update failed; next update will be attempted at the next interval.");
+            env->log.strategy_failures += 1;
+            const char* backend = getenv("NMMO3_STRATEGY_BACKEND");
+            const char* backend_name = backend ? backend : "LLM";
+            printf("\r\033[2K[%s] strategy update failed; next update will be attempted at the next interval.", backend_name);
             fflush(stdout);
         }
         return 0;
     }
 
-    if (qwen3_active_env != NULL) return 0;
+    if (strategy_active_env != NULL) return 0;
 
     if (build_strategy_context(env, pid, &context) < 0 ||
         pipe(input_pipe) < 0 || pipe(output_pipe) < 0) return 0;
-    env->log.qwen3_decisions += 1;
+    env->log.strategy_decisions += 1;
     child = fork();
     if (child == 0) {
+        const char* script = getenv("NMMO3_STRATEGY_SCRIPT");
+        if (script == NULL || script[0] == '\0') {
+            script = "ocean/nmmo3/llm_strategy.py";
+        }
         dup2(input_pipe[0], STDIN_FILENO);
         dup2(output_pipe[1], STDOUT_FILENO);
         close(input_pipe[0]);
         close(input_pipe[1]);
         close(output_pipe[0]);
         close(output_pipe[1]);
-        execlp("python3", "python3", "ocean/nmmo3/llm_strategy.py", (char*)NULL);
+        execlp("python3", "python3", script, (char*)NULL);
         _exit(127);
     }
     if (child < 0) {
@@ -299,9 +307,9 @@ int nmmo3_qwen3_strategy(MMO* env, int pid) {
     (void)write(input_pipe[1], context.text, strlen(context.text));
     close(input_pipe[1]);
     (void)fcntl(output_pipe[0], F_SETFL, fcntl(output_pipe[0], F_GETFL) | O_NONBLOCK);
-    env->qwen3_pid = child;
-    qwen3_active_env = env;
-    env->qwen3_output_fd = output_pipe[0];
-    env->qwen3_response_bytes = 0;
+    env->strategy_pid = child;
+    strategy_active_env = env;
+    env->strategy_output_fd = output_pipe[0];
+    env->strategy_response_bytes = 0;
     return 0;
 }

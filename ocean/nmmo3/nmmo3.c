@@ -177,13 +177,17 @@ static int query_llm_strategy(MMO* env, int pid) {
 
     child = fork();
     if (child == 0) {
+        const char* script = getenv("NMMO3_STRATEGY_SCRIPT");
+        if (script == NULL || script[0] == '\0') {
+            script = "ocean/nmmo3/llm_strategy.py";
+        }
         dup2(input_pipe[0], STDIN_FILENO);
         dup2(output_pipe[1], STDOUT_FILENO);
         close(input_pipe[0]);
         close(input_pipe[1]);
         close(output_pipe[0]);
         close(output_pipe[1]);
-        execlp("python3", "python3", "ocean/nmmo3/llm_strategy.py", (char*)NULL);
+        execlp("python3", "python3", script, (char*)NULL);
         _exit(127);
     }
     if (child < 0) {
@@ -265,18 +269,19 @@ void demo(int num_players) {
 
     float human_action = ATN_NOOP;
     bool human_mode = false;
+    const char* use_strat_env = getenv("NMMO3_USE_STRATEGY");
     const char* use_qwen3_env = getenv("NMMO3_USE_QWEN3");
-    bool use_qwen3 = use_qwen3_env != NULL &&
-        (strcmp(use_qwen3_env, "1") == 0 || strcmp(use_qwen3_env, "true") == 0);
+    bool use_llm_strategy = (use_strat_env != NULL && (strcmp(use_strat_env, "1") == 0 || strcmp(use_strat_env, "true") == 0)) ||
+                            (use_qwen3_env != NULL && (strcmp(use_qwen3_env, "1") == 0 || strcmp(use_qwen3_env, "true") == 0));
     int i = 1;
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_LEFT_CONTROL)) {
             human_mode = !human_mode;
         }
         if (i % 36 == 0) {
-            if (use_qwen3) {
+            if (use_llm_strategy) {
                 env.actions[0] = query_llm_strategy(&env, 0);
-                printf("Qwen3 recommended action: %s (%d)\n",
+                printf("LLM recommended action: %s (%d)\n",
                     action_name((int)env.actions[0]), (int)env.actions[0]);
             } else {
                 forward(net, env.observations, env.terminals, env.actions);
