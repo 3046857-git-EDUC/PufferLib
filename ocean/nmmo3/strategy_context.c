@@ -284,7 +284,7 @@ int nmmo3_strategy_step(MMO* env, int pid) {
     if (child == 0) {
         const char* script = getenv("NMMO3_STRATEGY_SCRIPT");
         if (script == NULL || script[0] == '\0') {
-            script = "ocean/nmmo3/llm_strategy.py";
+            script = "ocean/nmmo3/ollama_strategy.py";
         }
         dup2(input_pipe[0], STDIN_FILENO);
         dup2(output_pipe[1], STDOUT_FILENO);

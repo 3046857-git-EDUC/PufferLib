@@ -709,7 +709,7 @@ def main():
             raise ValueError('--ollama-interval must be positive')
         os.environ['NMMO3_USE_STRATEGY'] = '1'
         os.environ['NMMO3_STRATEGY_BACKEND'] = 'ollama'
-        os.environ['NMMO3_STRATEGY_SCRIPT'] = 'ocean/nmmo3/llm_strategy.py'
+        os.environ['NMMO3_STRATEGY_SCRIPT'] = 'ocean/nmmo3/ollama_strategy.py'
         os.environ['NMMO3_STRATEGY_INTERVAL'] = str(args['ollama_interval'])
         # Backward-compatibility environment variables
         os.environ['NMMO3_USE_QWEN3'] = '1'
