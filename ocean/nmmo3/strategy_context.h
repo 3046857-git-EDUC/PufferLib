@@ -72,5 +72,6 @@ typedef struct {
 } StrategyContext;
 
 int build_strategy_context(MMO* env, int pid, StrategyContext* context);
+int query_llm_action(MMO* env, int pid);
 
 #endif

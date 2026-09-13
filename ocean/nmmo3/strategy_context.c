@@ -54,6 +54,65 @@ static int append_text(char* text, int offset, const char* format, ...) {
     return offset + written;
 }
 
+int query_llm_action(MMO* env, int pid) {
+    int input_pipe[2], output_pipe[2];
+    pid_t child;
+    StrategyContext context;
+    char response[1024];
+    ssize_t bytes_read;
+    int status;
+    int action = ATN_NOOP;
+
+    if (build_strategy_context(env, pid, &context) < 0 ||
+        pipe(input_pipe) < 0 || pipe(output_pipe) < 0) {
+        return ATN_NOOP;
+    }
+    child = fork();
+    if (child == 0) {
+        const char* script = getenv("NMMO3_ACTION_SCRIPT");
+        int error_fd = open("/dev/null", O_WRONLY);
+        if (script == NULL || script[0] == '\0') {
+            script = "ocean/nmmo3/ollama_action.py";
+        }
+        dup2(input_pipe[0], STDIN_FILENO);
+        dup2(output_pipe[1], STDOUT_FILENO);
+        close(input_pipe[0]); close(input_pipe[1]);
+        close(output_pipe[0]); close(output_pipe[1]);
+        if (error_fd >= 0) {
+            dup2(error_fd, STDERR_FILENO);
+            close(error_fd);
+        }
+        execlp("python3", "python3", script, (char*)NULL);
+        _exit(127);
+    }
+    if (child < 0) {
+        close(input_pipe[0]); close(input_pipe[1]);
+        close(output_pipe[0]); close(output_pipe[1]);
+        return ATN_NOOP;
+    }
+    close(input_pipe[0]);
+    close(output_pipe[1]);
+    (void)write(input_pipe[1], context.text, strlen(context.text));
+    close(input_pipe[1]);
+    bytes_read = read(output_pipe[0], response, sizeof(response) - 1);
+    close(output_pipe[0]);
+    waitpid(child, &status, 0);
+    if (bytes_read <= 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return ATN_NOOP;
+    }
+    response[bytes_read] = '\0';
+    {
+        char* action_field = strstr(response, "\"action_code\"");
+        if (action_field) {
+            (void)sscanf(action_field, "\"action_code\"%*[^0-9]%d", &action);
+        }
+    }
+    if (action < ATN_DOWN || action > ATN_LEFT_SHIFT || action == 6 || action == 7) {
+        return ATN_NOOP;
+    }
+    return action;
+}
+
 int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
     int offset = 0;
     int group_alive = 0, group_dead = 0, group_r = 0, group_c = 0;

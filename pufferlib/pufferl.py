@@ -634,6 +634,20 @@ def load_config(env_name):
         help='Use OpenAI GPT to provide high-level strategy decisions in NMMO3')
     parser.add_argument('--gpt-interval', type=int, default=720,
         help='NMMO3 ticks between shared GPT strategy decisions')
+    parser.add_argument('--openrouter-strategy', action='store_true',
+        help='Use OpenRouter Gemma to provide high-level strategy decisions in NMMO3')
+    parser.add_argument('--openrouter-interval', type=int, default=720,
+        help='NMMO3 ticks between shared OpenRouter strategy decisions')
+    parser.add_argument('--ollama-action', action='store_true',
+        help='Use Ollama/Qwen3 for direct NMMO3 actions without reinforcement learning')
+    parser.add_argument('--gpt-action', action='store_true',
+        help='Use OpenAI GPT for direct NMMO3 actions without reinforcement learning')
+    parser.add_argument('--gemini-action', action='store_true',
+        help='Use Google Gemini for direct NMMO3 actions without reinforcement learning')
+    parser.add_argument('--gemma-action', action='store_true',
+        help='Use OpenRouter Gemma for direct NMMO3 actions without reinforcement learning')
+    parser.add_argument('--llm-action-interval', type=int, default=720,
+        help='NMMO3 ticks between individual direct LLM action requests')
     parser.add_argument('--save-frames', type=int, default=0)
     parser.add_argument('--gif-path', type=str, default='eval.gif')
     parser.add_argument('--fps', type=float, default=15)
@@ -690,7 +704,7 @@ def load_config(env_name):
     return dict(args)
 
 def main():
-    err = 'Usage: puffer [train, eval, sweep, paretosweep, match] [env_name] [optional args]. --help for more info'
+    err = 'Usage: puffer [train, eval, sweep, paretosweep, match, llm-action] [env_name] [optional args]. --help for more info'
     if len(sys.argv) < 3:
         raise ValueError(err)
 
@@ -698,9 +712,42 @@ def main():
     env_name = sys.argv.pop(1)
     args = load_config(env_name)
 
-    strategy_count = sum(bool(args.get(k)) for k in ('ollama_strategy', 'gemini_strategy', 'gpt_strategy'))
+    action_backends = sum(bool(args.get(k)) for k in
+        ('ollama_action', 'gemini_action', 'gpt_action', 'gemma_action'))
+    strategy_backends = sum(bool(args.get(k)) for k in
+        ('ollama_strategy', 'gemini_strategy', 'gpt_strategy', 'openrouter_strategy'))
+    if action_backends and strategy_backends:
+        raise ValueError('Direct LLM action mode cannot be combined with LLM strategy mode')
+    if action_backends > 1:
+        raise ValueError('Specify at most one direct LLM action backend')
+    if action_backends:
+        if mode != 'llm-action' or env_name != 'nmmo3':
+            raise ValueError(
+                'Direct LLM action mode requires: puffer llm-action nmmo3 '
+                '--ollama-action (or --gpt-action/--gemini-action/--gemma-action)')
+        if args['llm_action_interval'] <= 0:
+            raise ValueError('--llm-action-interval must be positive')
+        os.environ['NMMO3_USE_LLM_ACTION'] = '1'
+        os.environ['NMMO3_LLM_ACTION_INTERVAL'] = str(args['llm_action_interval'])
+        if args.get('ollama_action'):
+            os.environ['NMMO3_ACTION_BACKEND'] = 'ollama'
+            os.environ['NMMO3_ACTION_SCRIPT'] = 'ocean/nmmo3/ollama_action.py'
+        elif args.get('gpt_action'):
+            os.environ['NMMO3_ACTION_BACKEND'] = 'openai-gpt'
+            os.environ['NMMO3_ACTION_SCRIPT'] = 'ocean/nmmo3/gpt_action.py'
+        elif args.get('gemma_action'):
+            os.environ['NMMO3_ACTION_BACKEND'] = 'openrouter-gemma'
+            os.environ['NMMO3_ACTION_SCRIPT'] = 'ocean/nmmo3/gemma_action.py'
+        else:
+            os.environ['NMMO3_ACTION_BACKEND'] = 'gemini'
+            os.environ['NMMO3_ACTION_SCRIPT'] = 'ocean/nmmo3/gemini_action.py'
+        _llm_action(env_name, args)
+        return
+
+    strategy_count = sum(bool(args.get(k)) for k in
+        ('ollama_strategy', 'gemini_strategy', 'gpt_strategy', 'openrouter_strategy'))
     if strategy_count > 1:
-        raise ValueError('Can only specify at most one of --ollama-strategy, --gemini-strategy, or --gpt-strategy')
+        raise ValueError('Can only specify one strategy backend at a time')
 
     if args.get('ollama_strategy'):
         if env_name != 'nmmo3':
@@ -778,6 +825,35 @@ def main():
         os.environ['NMMO3_QWEN3_INTERVAL'] = str(args['gpt_interval'])
         print(f'OpenAI GPT group strategy enabled: one decision every {args["gpt_interval"]} ticks')
 
+    if args.get('openrouter_strategy'):
+        if env_name != 'nmmo3':
+            raise ValueError('--openrouter-strategy is only supported for nmmo3')
+        if args['openrouter_interval'] <= 0:
+            raise ValueError('--openrouter-interval must be positive')
+        openrouter_key = os.getenv('OPENROUTER_API_KEY')
+        if not openrouter_key or openrouter_key.startswith('your_'):
+            env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), '.env')
+            if os.path.isfile(env_file):
+                with open(env_file) as file:
+                    for line in file:
+                        if line.strip().startswith('OPENROUTER_API_KEY='):
+                            value = line.strip().split('=', 1)[1].strip().strip('\'"')
+                            if value and not value.startswith('your_'):
+                                openrouter_key = value
+                                os.environ['OPENROUTER_API_KEY'] = value
+                                break
+        if not openrouter_key or openrouter_key.startswith('your_'):
+            raise ValueError(
+                'OPENROUTER_API_KEY environment variable (or .env file) is required when using '
+                '--openrouter-strategy. Do not commit the key to the repository.')
+        os.environ['NMMO3_USE_STRATEGY'] = '1'
+        os.environ['NMMO3_STRATEGY_BACKEND'] = 'openrouter'
+        os.environ['NMMO3_STRATEGY_SCRIPT'] = 'ocean/nmmo3/openrouter_strategy.py'
+        os.environ['NMMO3_STRATEGY_INTERVAL'] = str(args['openrouter_interval'])
+        os.environ['NMMO3_USE_QWEN3'] = '0'
+        os.environ['NMMO3_QWEN3_INTERVAL'] = str(args['openrouter_interval'])
+        print(f'OpenRouter Gemma strategy enabled: one decision every {args["openrouter_interval"]} ticks')
+
     if 'train' in mode:
         train(env_name=env_name, args=args)
     elif 'eval' in mode:
@@ -793,6 +869,21 @@ def main():
             num_games=args.get('num_games', 4096), args=args)
     else:
         raise ValueError(err)
+
+def _llm_action(env_name, args):
+    if env_name != 'nmmo3':
+        raise ValueError('Direct LLM action mode is only supported for nmmo3')
+    vec = _C.create_vec(args)
+    actions = np.zeros((args['vec']['total_agents'], vec.num_atns), dtype=np.float32)
+    total_steps = int(args['train']['total_timesteps'])
+    vec.reset()
+    try:
+        for step in range(total_steps):
+            vec.cpu_step(actions.ctypes.data)
+            if step and step % 100 == 0:
+                print(f'LLM action steps: {step}/{total_steps}')
+    finally:
+        vec.close()
 
 if __name__ == '__main__':
     main()
