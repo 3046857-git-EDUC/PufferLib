@@ -4,6 +4,7 @@
 #define NUM_ATNS 1
 #define ACT_SIZES {26}
 #define OBS_TENSOR_T ByteTensor
+#define MY_LOG_LLM_TOKENS
 
 #define Env MMO
 #include "vecenv.h"
@@ -53,6 +54,10 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "strategy_decisions", log->strategy_decisions);
     dict_set(out, "strategy_failures", log->strategy_failures);
     dict_set(out, "strategy_updates", log->strategy_updates);
+    dict_set(out, "llm_input_tokens", log->llm_input_tokens);
+    dict_set(out, "llm_output_tokens", log->llm_output_tokens);
+    dict_set(out, "llm_cumulative_input_tokens", log->llm_cumulative_input_tokens);
+    dict_set(out, "llm_cumulative_output_tokens", log->llm_cumulative_output_tokens);
     dict_set(out, "comb_lvl", log->comb_lvl);
     dict_set(out, "prof_lvl", log->prof_lvl);
 }

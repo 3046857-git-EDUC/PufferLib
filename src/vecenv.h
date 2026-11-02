@@ -666,8 +666,20 @@ static inline float static_vec_aggregate_logs(StaticVec* vec, Log* out) {
     Env* envs = (Env*)vec->envs;
     memset(out, 0, sizeof(Log));
     int num_keys = sizeof(Log) / sizeof(float);
+#ifdef MY_LOG_LLM_TOKENS
+    float llm_input_tokens = 0;
+    float llm_output_tokens = 0;
+    float llm_cumulative_input_tokens = 0;
+    float llm_cumulative_output_tokens = 0;
+#endif
     for (int i = 0; i < vec->size; i++) {
         Env* env = &envs[i];
+#ifdef MY_LOG_LLM_TOKENS
+        llm_input_tokens += env->log.llm_input_tokens;
+        llm_output_tokens += env->log.llm_output_tokens;
+        llm_cumulative_input_tokens += env->log.llm_cumulative_input_tokens;
+        llm_cumulative_output_tokens += env->log.llm_cumulative_output_tokens;
+#endif
         if (env->log.n == 0) {
             continue;
         }
@@ -677,36 +689,98 @@ static inline float static_vec_aggregate_logs(StaticVec* vec, Log* out) {
     }
     float n = out->n;
     if (n == 0.0f) {
+#ifdef MY_LOG_LLM_TOKENS
+        out->llm_input_tokens = llm_input_tokens;
+        out->llm_output_tokens = llm_output_tokens;
+        out->llm_cumulative_input_tokens = llm_cumulative_input_tokens;
+        out->llm_cumulative_output_tokens = llm_cumulative_output_tokens;
+#endif
         return 0;
     }
     for (int i = 0; i < num_keys; i++) {
         ((float*)out)[i] /= n;
     }
+#ifdef MY_LOG_LLM_TOKENS
+    out->llm_input_tokens = llm_input_tokens;
+    out->llm_output_tokens = llm_output_tokens;
+    out->llm_cumulative_input_tokens = llm_cumulative_input_tokens;
+    out->llm_cumulative_output_tokens = llm_cumulative_output_tokens;
+#endif
     return n;
 }
+
+#ifdef MY_LOG_LLM_TOKENS
+static inline int static_vec_has_llm_tokens(const Log* log) {
+    return log->llm_input_tokens != 0 || log->llm_output_tokens != 0 ||
+        log->llm_cumulative_input_tokens != 0 ||
+        log->llm_cumulative_output_tokens != 0;
+}
+
+static inline void static_vec_log_llm_tokens(const Log* log, Dict* out) {
+    dict_set(out, "llm_input_tokens", log->llm_input_tokens);
+    dict_set(out, "llm_output_tokens", log->llm_output_tokens);
+    dict_set(out, "llm_cumulative_input_tokens", log->llm_cumulative_input_tokens);
+    dict_set(out, "llm_cumulative_output_tokens", log->llm_cumulative_output_tokens);
+}
+#endif
 
 void static_vec_log(StaticVec* vec, Dict* out) {
     Env* envs = (Env*)vec->envs;
     Log aggregate;
     float n = static_vec_aggregate_logs(vec, &aggregate);
+#ifdef MY_LOG_LLM_TOKENS
+    if (n == 0 && !static_vec_has_llm_tokens(&aggregate)) {
+        return;
+    }
+#else
     if (n == 0) {
         return;
     }
-    for (int i = 0; i < vec->size; i++) {
-        memset(&envs[i].log, 0, sizeof(Log));
+#endif
+    if (n != 0) {
+        for (int i = 0; i < vec->size; i++) {
+            memset(&envs[i].log, 0, sizeof(Log));
+        }
+        my_log(&aggregate, out);
+        dict_set(out, "n", n);
     }
-    my_log(&aggregate, out);
-    dict_set(out, "n", n);
+#ifdef MY_LOG_LLM_TOKENS
+    else {
+        static_vec_log_llm_tokens(&aggregate, out);
+    }
+    for (int i = 0; i < vec->size; i++) {
+        envs[i].log.llm_input_tokens = 0.0f;
+        envs[i].log.llm_output_tokens = 0.0f;
+    }
+#endif
 }
 
 void static_vec_eval_log(StaticVec* vec, Dict* out) {
     Log aggregate;
     float n = static_vec_aggregate_logs(vec, &aggregate);
+#ifdef MY_LOG_LLM_TOKENS
+    if (n == 0 && !static_vec_has_llm_tokens(&aggregate)) {
+        return;
+    }
+#else
     if (n == 0) {
         return;
     }
-    my_log(&aggregate, out);
-    dict_set(out, "n", n);
+#endif
+    if (n != 0) {
+        my_log(&aggregate, out);
+        dict_set(out, "n", n);
+    }
+#ifdef MY_LOG_LLM_TOKENS
+    else {
+        static_vec_log_llm_tokens(&aggregate, out);
+    }
+    Env* envs = (Env*)vec->envs;
+    for (int i = 0; i < vec->size; i++) {
+        envs[i].log.llm_input_tokens = 0.0f;
+        envs[i].log.llm_output_tokens = 0.0f;
+    }
+#endif
 }
 
 void static_vec_read_profile(StaticVec* vec, float out[NUM_EVAL_PROF]) {

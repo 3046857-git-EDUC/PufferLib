@@ -244,6 +244,10 @@ struct Log {
     float strategy_decisions;
     float strategy_failures;
     float strategy_updates;
+    float llm_input_tokens;
+    float llm_output_tokens;
+    float llm_cumulative_input_tokens;
+    float llm_cumulative_output_tokens;
     float comb_lvl;
     float prof_lvl;
 };
@@ -738,7 +742,8 @@ struct MMO {
     float reward_market;
     float reward_death;
     int strategy_current_action;
-    int llm_action_pid;
+    unsigned long long llm_cumulative_input_tokens;
+    unsigned long long llm_cumulative_output_tokens;
     unsigned char strategy_features[NMMO3_STRATEGY_DIM];
     int strategy_pid;
     int strategy_output_fd;
@@ -794,7 +799,8 @@ void add_player_log(MMO* env, int pid) {
 void init(MMO* env) {
     init_items();
     env->strategy_current_action = ATN_NOOP;
-    env->llm_action_pid = 0;
+    env->llm_cumulative_input_tokens = 0;
+    env->llm_cumulative_output_tokens = 0;
     env->strategy_pid = -1;
     env->strategy_output_fd = -1;
     env->strategy_response_bytes = 0;
@@ -1244,9 +1250,6 @@ inline bool dest_check(MMO* env, int r, int c) {
 
 int nmmo3_strategy_step(MMO* env, int pid);
 #define nmmo3_qwen3_strategy nmmo3_strategy_step
-int query_llm_action(MMO* env, int pid);
-int query_llm_actions(MMO* env, int first_pid, int count);
-
 void move(MMO* env, int pid, int direction, bool run) {
     Entity* entity = get_entity(env, pid);
     int r = entity->r;
@@ -1688,13 +1691,6 @@ void enemy_ai(MMO* env, int pid) {
 
 void c_reset(MMO* env) {
     env->tick = 0;
-    const char* use_llm_action = getenv("NMMO3_USE_LLM_ACTION");
-    if (use_llm_action != NULL &&
-        (strcmp(use_llm_action, "1") == 0 || strcmp(use_llm_action, "true") == 0)) {
-        for (int pid = 0; pid < env->num_agents; pid++) {
-            env->actions[pid] = ATN_NOOP;
-        }
-    }
 
     env->market_sells = 0;
     env->market_buys = 0;
@@ -1899,16 +1895,12 @@ void c_reset(MMO* env) {
 void c_step(MMO* env) {
     env->tick += 1;
     int tick = env->tick;
+    env->log.llm_cumulative_input_tokens =
+        (float)env->llm_cumulative_input_tokens;
+    env->log.llm_cumulative_output_tokens =
+        (float)env->llm_cumulative_output_tokens;
 
     int strategy_interval = 720;
-    int llm_action_interval = 1;
-    const char* llm_action_interval_env = getenv("NMMO3_LLM_ACTION_INTERVAL");
-    if (llm_action_interval_env != NULL) {
-        int configured_interval = atoi(llm_action_interval_env);
-        if (configured_interval > 0) {
-            llm_action_interval = configured_interval;
-        }
-    }
     const char* strategy_interval_env = getenv("NMMO3_STRATEGY_INTERVAL");
     if (strategy_interval_env == NULL) {
         strategy_interval_env = getenv("NMMO3_QWEN3_INTERVAL");
@@ -1921,23 +1913,9 @@ void c_step(MMO* env) {
     }
     const char* use_strategy = getenv("NMMO3_USE_STRATEGY");
     const char* use_qwen3 = getenv("NMMO3_USE_QWEN3");
-    const char* use_llm_action = getenv("NMMO3_USE_LLM_ACTION");
-    bool llm_action_enabled = (use_llm_action != NULL &&
-        (strcmp(use_llm_action, "1") == 0 || strcmp(use_llm_action, "true") == 0));
     bool strategy_enabled = (use_strategy != NULL && (strcmp(use_strategy, "1") == 0 || strcmp(use_strategy, "true") == 0)) ||
                            (use_qwen3 != NULL && (strcmp(use_qwen3, "1") == 0 || strcmp(use_qwen3, "true") == 0));
-    if (llm_action_enabled && env->num_agents > 0 && tick % llm_action_interval == 0) {
-        int batch_size = 8;
-        const char* batch_size_env = getenv("NMMO3_LLM_ACTION_BATCH_SIZE");
-        if (batch_size_env != NULL && atoi(batch_size_env) > 0) {
-            batch_size = atoi(batch_size_env);
-        }
-        for (int first_pid = 0; first_pid < env->num_agents; first_pid += batch_size) {
-            int count = env->num_agents - first_pid;
-            if (count > batch_size) count = batch_size;
-            (void)query_llm_actions(env, first_pid, count);
-        }
-    } else if (strategy_enabled && env->num_agents > 0) {
+    if (strategy_enabled && env->num_agents > 0) {
         if (env->strategy_pid > 0 || tick % strategy_interval == 0) {
             (void)nmmo3_strategy_step(env, 0);
         }
@@ -3283,5 +3261,3 @@ int c_render(MMO* env) {
 }
 
 #endif
-
-

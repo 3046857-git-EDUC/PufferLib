@@ -4,12 +4,18 @@
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
+
+try:
+    from google import genai
+    from google.genai import types
+except ImportError as error:
+    raise ImportError(
+        f"Gemini strategy requires google-genai in {sys.executable}; "
+        f"install it with '{sys.executable} -m pip install google-genai'"
+    ) from error
 
 from strategy_prompt import build_strategy_prompt
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL = os.getenv("NMMO3_GEMINI_MODEL", "gemini-3.5-flash-lite")
 REQUEST_TIMEOUT = float(os.getenv("NMMO3_GEMINI_TIMEOUT", "60"))
 
@@ -70,32 +76,32 @@ def query_gemini(strategy_context):
     if not api_key:
         raise ValueError("GEMINI_API_KEY environment variable is missing or invalid.")
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={api_key}"
     prompt = build_strategy_prompt(strategy_context)
-
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "response_mime_type": "application/json",
-            "temperature": 0.2,
-        },
-    }
-
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-
+    client = genai.Client(api_key=api_key, vertexai=True)
     try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
-            data = json.load(response)
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            return parse_strategy_response(text)
-    except urllib.error.HTTPError as http_err:
-        err_body = http_err.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP Error {http_err.code}: {http_err.reason} - {err_body}") from http_err
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.2,
+                http_options=types.HttpOptions(timeout=int(REQUEST_TIMEOUT * 1000)),
+            ),
+        )
+        strategy = parse_strategy_response(response.text)
+        usage = response.usage_metadata
+        if usage is None:
+            raise ValueError("Gemini response is missing token usage metadata")
+        input_tokens = int(usage.prompt_token_count)
+        output_tokens = int(usage.candidates_token_count)
+        print(f"Input tokens: {input_tokens}", file=sys.stderr)
+        print(f"Output tokens: {output_tokens}", file=sys.stderr)
+        print(f"Total tokens: {input_tokens + output_tokens}", file=sys.stderr)
+        strategy["llm_input_tokens"] = input_tokens
+        strategy["llm_output_tokens"] = output_tokens
+        return strategy
+    finally:
+        client.close()
 
 
 def main():

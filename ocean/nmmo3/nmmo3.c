@@ -177,7 +177,11 @@ static int query_llm_strategy(MMO* env, int pid) {
 
     child = fork();
     if (child == 0) {
+        const char* python = getenv("NMMO3_STRATEGY_PYTHON");
         const char* script = getenv("NMMO3_STRATEGY_SCRIPT");
+        if (python == NULL || python[0] == '\0') {
+            python = "python3";
+        }
         if (script == NULL || script[0] == '\0') {
             script = "ocean/nmmo3/ollama_strategy.py";
         }
@@ -187,7 +191,7 @@ static int query_llm_strategy(MMO* env, int pid) {
         close(input_pipe[1]);
         close(output_pipe[0]);
         close(output_pipe[1]);
-        execlp("python3", "python3", script, (char*)NULL);
+        execlp(python, python, script, (char*)NULL);
         _exit(127);
     }
     if (child < 0) {

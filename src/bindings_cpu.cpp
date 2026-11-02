@@ -133,14 +133,8 @@ static void vec_reset(VecEnv& ve) {
 }
 
 static void cpu_vec_step_py(VecEnv& ve, long long actions_ptr) {
-    const char* direct_llm_actions = std::getenv("NMMO3_USE_LLM_ACTION");
-    bool preserve_native_actions = direct_llm_actions != nullptr &&
-        (std::strcmp(direct_llm_actions, "1") == 0 ||
-         std::strcmp(direct_llm_actions, "true") == 0);
-    if (!preserve_native_actions) {
-        memcpy(ve.vec->actions, (void*)actions_ptr,
-            (size_t)ve.total_agents * ve.num_atns * sizeof(float));
-    }
+    memcpy(ve.vec->actions, (void*)actions_ptr,
+        (size_t)ve.total_agents * ve.num_atns * sizeof(float));
     {
         py::gil_scoped_release no_gil;
         cpu_vec_step(ve.vec);

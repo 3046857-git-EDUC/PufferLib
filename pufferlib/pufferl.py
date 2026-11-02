@@ -10,7 +10,6 @@ import glob
 import json
 import ast
 import time
-import ctypes
 import argparse
 import configparser
 from collections import defaultdict
@@ -64,6 +63,15 @@ def rename_nmmo3_action_logs(flat_logs):
             key = f'action/head_0_action_{action}_{metric}'
             if key in flat_logs:
                 flat_logs[f'action/{name}/{metric}'] = flat_logs.pop(key)
+
+def rename_nmmo3_llm_token_logs(flat_logs):
+    for metric in (
+        'input_tokens', 'output_tokens',
+        'cumulative_input_tokens', 'cumulative_output_tokens',
+    ):
+        key = f'env/llm_{metric}'
+        if key in flat_logs:
+            flat_logs[f'llm/{metric}'] = flat_logs.pop(key)
 
 def abbreviate(num, b2, c2):
     prefixes = ['', 'K', 'M', 'B', 'T']
@@ -169,7 +177,7 @@ def print_dashboard(args, model_size, flat_logs, clear=False, idx=[0],
             u = left if i % 2 == 0 else right
             u.add_row(f'{b2}{stat}', f'{b2}{v:.3f}')
             i += 1
-            if i == 30:
+            if i == 60:
                 break
 
     if clear:
@@ -287,9 +295,11 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
             continue
 
         logs = backend.eval_log(pufferl) if epoch >= train_epochs else backend.log(pufferl)
-        flat_logs = {**flat_logs, **dict(unroll_nested_dict(logs))}
+        current_logs = dict(unroll_nested_dict(logs))
         if args['env_name'] == 'nmmo3':
-            rename_nmmo3_action_logs(flat_logs)
+            rename_nmmo3_action_logs(current_logs)
+            rename_nmmo3_llm_token_logs(current_logs)
+        flat_logs = {**flat_logs, **current_logs}
 
         if epoch < train_epochs:
             selfplay.step(pufferl, backend, pool_state, flat_logs, epoch)
@@ -298,6 +308,15 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
             print_dashboard(args, model_size, flat_logs)
 
         if target_key not in flat_logs:
+            if args['wandb']:
+                token_logs = {
+                    key: value for key, value in current_logs.items()
+                    if key.startswith('llm/')
+                }
+                if token_logs:
+                    wandb.log(
+                        token_logs,
+                        step=flat_logs.get('agent_steps', pufferl.global_step))
             continue
 
         if args['wandb']:
@@ -669,18 +688,6 @@ def load_config(env_name):
         help='Use OpenRouter Gemma to provide high-level strategy decisions in NMMO3')
     parser.add_argument('--openrouter-interval', type=int, default=720,
         help='NMMO3 ticks between shared OpenRouter strategy decisions')
-    parser.add_argument('--ollama-action', action='store_true',
-        help='Use Ollama/Qwen3 for direct NMMO3 actions without reinforcement learning')
-    parser.add_argument('--gpt-action', action='store_true',
-        help='Use OpenAI GPT for direct NMMO3 actions without reinforcement learning')
-    parser.add_argument('--gemini-action', action='store_true',
-        help='Use Google Gemini for direct NMMO3 actions without reinforcement learning')
-    parser.add_argument('--gemma-action', action='store_true',
-        help='Use OpenRouter Gemma for direct NMMO3 actions without reinforcement learning')
-    parser.add_argument('--llm-action-interval', type=int, default=720,
-        help='NMMO3 ticks between complete multi-agent direct LLM action rounds')
-    parser.add_argument('--llm-action-batch-size', type=int, default=8,
-        help='Number of agents included in each direct LLM request batch')
     parser.add_argument('--save-frames', type=int, default=0)
     parser.add_argument('--gif-path', type=str, default='eval.gif')
     parser.add_argument('--fps', type=float, default=15)
@@ -749,7 +756,7 @@ def _parse_config_value(value, value_type):
     return value_type(value)
 
 def main():
-    err = 'Usage: puffer [train, eval, sweep, paretosweep, match, llm-action] [env_name] [optional args]. --help for more info'
+    err = 'Usage: puffer [train, eval, sweep, paretosweep, match] [env_name] [optional args]. --help for more info'
     if len(sys.argv) < 3:
         raise ValueError(err)
 
@@ -757,53 +764,14 @@ def main():
     env_name = sys.argv.pop(1)
     args = load_config(env_name)
 
-    action_backends = sum(bool(args.get(k)) for k in
-        ('ollama_action', 'gemini_action', 'gpt_action', 'gemma_action'))
     strategy_backends = sum(bool(args.get(k)) for k in
         ('ollama_strategy', 'gemini_strategy', 'gpt_strategy', 'openrouter_strategy'))
-    if action_backends and strategy_backends:
-        raise ValueError('Direct LLM action mode cannot be combined with LLM strategy mode')
-    if action_backends > 1:
-        raise ValueError('Specify at most one direct LLM action backend')
-    if action_backends:
-        if mode != 'llm-action' or env_name != 'nmmo3':
-            raise ValueError(
-                'Direct LLM action mode requires: puffer llm-action nmmo3 '
-                '--ollama-action (or --gpt-action/--gemini-action/--gemma-action)')
-        if args['llm_action_interval'] <= 0:
-            raise ValueError('--llm-action-interval must be positive')
-        if args['llm_action_batch_size'] <= 0:
-            raise ValueError('--llm-action-batch-size must be positive')
-        if args['vec']['total_agents'] != args['env']['num_agents']:
-            raise ValueError(
-                'Direct LLM action mode supports one NMMO world: '
-                '--vec.total-agents must equal --env.num-agents')
-        if args['vec']['num_buffers'] != 1 or args['vec']['num_threads'] != 1:
-            raise ValueError(
-                'Direct LLM action mode requires --vec.num-buffers 1 '
-                'and --vec.num-threads 1 to serialize LLM requests')
-        os.environ['NMMO3_USE_LLM_ACTION'] = '1'
-        os.environ['NMMO3_LLM_ACTION_INTERVAL'] = str(args['llm_action_interval'])
-        os.environ['NMMO3_LLM_ACTION_BATCH_SIZE'] = str(args['llm_action_batch_size'])
-        if args.get('ollama_action'):
-            os.environ['NMMO3_ACTION_BACKEND'] = 'ollama'
-            os.environ['NMMO3_ACTION_SCRIPT'] = 'ocean/nmmo3/ollama_action.py'
-        elif args.get('gpt_action'):
-            os.environ['NMMO3_ACTION_BACKEND'] = 'openai-gpt'
-            os.environ['NMMO3_ACTION_SCRIPT'] = 'ocean/nmmo3/gpt_action.py'
-        elif args.get('gemma_action'):
-            os.environ['NMMO3_ACTION_BACKEND'] = 'openrouter-gemma'
-            os.environ['NMMO3_ACTION_SCRIPT'] = 'ocean/nmmo3/gemma_action.py'
-        else:
-            os.environ['NMMO3_ACTION_BACKEND'] = 'gemini'
-            os.environ['NMMO3_ACTION_SCRIPT'] = 'ocean/nmmo3/gemini_action.py'
-        _llm_action(env_name, args)
-        return
-
     strategy_count = sum(bool(args.get(k)) for k in
         ('ollama_strategy', 'gemini_strategy', 'gpt_strategy', 'openrouter_strategy'))
     if strategy_count > 1:
         raise ValueError('Can only specify one strategy backend at a time')
+    if strategy_count and env_name == 'nmmo3':
+        os.environ['NMMO3_STRATEGY_PYTHON'] = sys.executable
 
     if args.get('ollama_strategy'):
         if env_name != 'nmmo3':
@@ -925,91 +893,6 @@ def main():
             num_games=args.get('num_games', 4096), args=args)
     else:
         raise ValueError(err)
-
-def _llm_action(env_name, args, verbose=True):
-    '''Standalone no-RL loop: an LLM selects every primitive action. Reuses the same
-    dashboard/logging shape as MAPPO training (print_dashboard, action renaming,
-    wandb) so runs are directly comparable, minus any loss/optimizer metrics.'''
-    if env_name != 'nmmo3':
-        raise ValueError('Direct LLM action mode is only supported for nmmo3')
-    vec = _C.create_vec(args)
-    actions = np.zeros((args['vec']['total_agents'], vec.num_atns), dtype=np.float32)
-    total_steps = int(args['train']['total_timesteps'])
-    total_agents = vec.total_agents
-    reward_buffer = np.ctypeslib.as_array(
-        (ctypes.c_float * total_agents).from_address(vec.rewards_ptr))
-    terminal_buffer = np.ctypeslib.as_array(
-        (ctypes.c_float * total_agents).from_address(vec.terminals_ptr))
-    action_buffer = np.ctypeslib.as_array(
-        (ctypes.c_float * (total_agents * vec.num_atns)).from_address(vec.actions_ptr))
-
-    run_id = str(int(1000 * time.time()))
-    if args['wandb']:
-        import wandb
-        wandb.init(id=run_id, config={**args, 'llm_mode': 'reactive_llm_only'},
-            project=args['wandb_project'], group=args['wandb_group'],
-            tags=[args['tag']] if args['tag'] is not None else [],
-            settings=wandb.Settings(console='off'))
-
-    start_time = time.time()
-    last_log_time = start_time
-    last_log_step = 0
-    episode_return = 0.0
-    episode_length = 0.0
-    num_episodes = 0
-    action_counts = np.zeros(26, dtype=np.int64)
-    flat_logs = {}
-
-    vec.reset()
-    try:
-        for epoch in range(total_steps):
-            vec.cpu_step(actions.ctypes.data)
-            episode_return += float(reward_buffer.sum())
-            episode_length += 1
-            terminated = int(np.count_nonzero(terminal_buffer))
-            num_episodes += terminated
-            for code in action_buffer.astype(np.int64):
-                if 0 <= code < 26:
-                    action_counts[code] += 1
-
-            if time.time() < last_log_time + 0.6 and epoch < total_steps - 1:
-                continue
-
-            now = time.time()
-            global_step = (epoch + 1) * total_agents
-            elapsed = max(now - last_log_time, 1e-9)
-            sps = (global_step - last_log_step) / elapsed
-            last_log_time = now
-            last_log_step = global_step
-
-            env_logs = vec.log()
-            flat_logs = {**flat_logs, **{f'env/{k}': v for k, v in env_logs.items()}}
-            # Fallback estimates for the dashboard before any episode has completed;
-            # vec.log() supplies the accurate per-episode averages once n > 0.
-            flat_logs.setdefault('env/episode_return', episode_return)
-            flat_logs.setdefault('env/episode_length', episode_length)
-            flat_logs.setdefault('env/n', max(num_episodes, 1))
-            action_total = max(int(action_counts.sum()), 1)
-            for code in range(26):
-                flat_logs[f'action/head_0_action_{code}_count'] = int(action_counts[code])
-                flat_logs[f'action/head_0_action_{code}_fraction'] = action_counts[code] / action_total
-            rename_nmmo3_action_logs(flat_logs)
-
-            flat_logs.update({
-                'SPS': sps,
-                'agent_steps': global_step,
-                'uptime': now - start_time,
-                'epoch': epoch,
-            })
-
-            if verbose:
-                print_dashboard(args, 0, flat_logs)
-            if args['wandb']:
-                wandb.log(flat_logs, step=global_step)
-    finally:
-        vec.close()
-        if args['wandb']:
-            wandb.run.finish()
 
 if __name__ == '__main__':
     main()

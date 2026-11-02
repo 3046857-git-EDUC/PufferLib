@@ -95,11 +95,16 @@ def query_gpt(strategy_context):
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
             data = json.load(response)
             usage = data["usage"]
-            print(f"Input tokens: {usage['prompt_tokens']}", file=sys.stderr)
-            print(f"Output tokens: {usage['completion_tokens']}", file=sys.stderr)
-            print(f"Total tokens: {usage['total_tokens']}", file=sys.stderr)
+            input_tokens = int(usage["prompt_tokens"])
+            output_tokens = int(usage["completion_tokens"])
+            print(f"Input tokens: {input_tokens}", file=sys.stderr)
+            print(f"Output tokens: {output_tokens}", file=sys.stderr)
+            print(f"Total tokens: {input_tokens + output_tokens}", file=sys.stderr)
             text = data["choices"][0]["message"]["content"]
-            return parse_strategy_response(text)
+            strategy = parse_strategy_response(text)
+            strategy["llm_input_tokens"] = input_tokens
+            strategy["llm_output_tokens"] = output_tokens
+            return strategy
     except urllib.error.HTTPError as http_err:
         err_body = http_err.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"HTTP Error {http_err.code}: {http_err.reason} - {err_body}") from http_err

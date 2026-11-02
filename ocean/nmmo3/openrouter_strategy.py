@@ -95,8 +95,12 @@ def query_openrouter(strategy_context):
     try:
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
             data = json.load(response)
+        usage = data["usage"]
         text = data["choices"][0]["message"]["content"]
-        return parse_strategy_response(text)
+        strategy = parse_strategy_response(text)
+        strategy["llm_input_tokens"] = int(usage["prompt_tokens"])
+        strategy["llm_output_tokens"] = int(usage["completion_tokens"])
+        return strategy
     except urllib.error.HTTPError as error:
         body = error.read().decode("utf-8", errors="replace")
         if error.code == 429:

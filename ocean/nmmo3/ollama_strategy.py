@@ -110,7 +110,10 @@ def query_ollama(strategy_context):
                 time.sleep(2 ** attempt)
         else:
             raise urllib.error.URLError("Ollama connection retry limit reached")
-    return parse_strategy_response(payload.get("response", ""))
+    strategy = parse_strategy_response(payload.get("response", ""))
+    strategy["llm_input_tokens"] = int(input_tokens)
+    strategy["llm_output_tokens"] = int(output_tokens)
+    return strategy
 
 
 def main():
