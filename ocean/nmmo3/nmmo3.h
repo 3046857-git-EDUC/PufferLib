@@ -237,6 +237,10 @@ struct Log {
     float min_comb_prof;
     float purchases;
     float sales;
+    float trade_buy_attempts;
+    float trade_buy_successes;
+    float trade_sell_attempts;
+    float trade_sell_successes;
     float equip_attack;
     float equip_defense;
     float r;
@@ -569,6 +573,10 @@ struct Entity {
     int time_alive;
     int purchases;
     int sales;
+    int trade_buy_attempts;
+    int trade_buy_successes;
+    int trade_sell_attempts;
+    int trade_sell_successes;
 };
 
 typedef struct Item Item;
@@ -776,6 +784,10 @@ void add_player_log(MMO* env, int pid) {
     log->min_comb_prof += (player->prof_lvl > player->comb_lvl) ? player->comb_lvl : player->prof_lvl;
     log->purchases += player->purchases;
     log->sales += player->sales;
+    log->trade_buy_attempts += player->trade_buy_attempts;
+    log->trade_buy_successes += player->trade_buy_successes;
+    log->trade_sell_attempts += player->trade_sell_attempts;
+    log->trade_sell_successes += player->trade_sell_successes;
     log->equip_attack += player->equipment_attack;
     log->equip_defense += player->equipment_defense;
     log->r += player->r;
@@ -1108,6 +1120,10 @@ void spawn(MMO* env, Entity* entity) {
     entity->time_alive = 0;
     entity->purchases = 0;
     entity->sales = 0;
+    entity->trade_buy_attempts = 0;
+    entity->trade_buy_successes = 0;
+    entity->trade_sell_attempts = 0;
+    entity->trade_sell_successes = 0;
 
     int idx = safe_tile(env, 5);
     int r = idx / env->width;
@@ -2130,6 +2146,7 @@ void c_step(MMO* env) {
             
             entity->inventory[inventory_idx] = item_id;
             entity->purchases += 1;
+            entity->trade_buy_successes += 1;
         } else if (is_sell(ui_mode)) {
             if (action != ATN_NOOP) {
                 entity->ui_mode = MODE_PLAY;
@@ -2177,6 +2194,7 @@ void c_step(MMO* env) {
 
             entity->inventory[inventory_idx] = 0;
             entity->sales += 1;
+            entity->trade_sell_successes += 1;
             env->market_sells += 1;
             reward->market_sell = env->reward_market;
             Reward* ret = &env->returns[pid];
@@ -2193,8 +2211,10 @@ void c_step(MMO* env) {
         } else if (is_num(action)) {
             use_item(env, pid, action - ATN_ONE);
         } else if (action == ATN_BUY) {
+            entity->trade_buy_attempts += 1;
             entity->ui_mode = MODE_BUY_TIER;
         } else if (action == ATN_SELL) {
+            entity->trade_sell_attempts += 1;
             entity->ui_mode = MODE_SELL_SELECT;
         }
     }

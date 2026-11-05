@@ -47,6 +47,10 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "min_comb_prof", log->min_comb_prof);
     dict_set(out, "purchases", log->purchases);
     dict_set(out, "sales", log->sales);
+    dict_set(out, "trade_buy_attempts", log->trade_buy_attempts);
+    dict_set(out, "trade_buy_successes", log->trade_buy_successes);
+    dict_set(out, "trade_sell_attempts", log->trade_sell_attempts);
+    dict_set(out, "trade_sell_successes", log->trade_sell_successes);
     dict_set(out, "equip_attack", log->equip_attack);
     dict_set(out, "equip_defense", log->equip_defense);
     dict_set(out, "r", log->r);

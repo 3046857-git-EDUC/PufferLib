@@ -7,6 +7,7 @@ import sys
 
 try:
     from google import genai
+    from google.genai import errors
     from google.genai import types
 except ImportError as error:
     raise ImportError(
@@ -71,32 +72,65 @@ def parse_strategy_response(response_text):
     return strategy
 
 
+def _read_token_counts(usage):
+    if usage is None:
+        raise ValueError("Gemini response is missing token usage metadata")
+
+    prompt_tokens = usage.prompt_token_count
+    if prompt_tokens is None:
+        raise ValueError("Gemini response is missing prompt token count")
+    input_tokens = int(prompt_tokens)
+
+    total_tokens = getattr(usage, "total_token_count", None)
+    if total_tokens is not None:
+        output_tokens = int(total_tokens) - input_tokens
+    else:
+        response_tokens = getattr(usage, "response_token_count", None)
+        if response_tokens is None:
+            response_tokens = getattr(usage, "candidates_token_count", None)
+        if response_tokens is None:
+            raise ValueError("Gemini response is missing output token count")
+        output_tokens = int(response_tokens)
+        output_tokens += int(getattr(usage, "thoughts_token_count", 0) or 0)
+        output_tokens += int(getattr(usage, "tool_use_prompt_token_count", 0) or 0)
+
+    if input_tokens < 0 or output_tokens < 0:
+        raise ValueError("Gemini response contains invalid token counts")
+    return input_tokens, output_tokens
+
+
 def query_gemini(strategy_context):
     api_key = get_api_key()
     if not api_key:
         raise ValueError("GEMINI_API_KEY environment variable is missing or invalid.")
 
     prompt = build_strategy_prompt(strategy_context)
-    client = genai.Client(api_key=api_key, vertexai=True)
+    client = genai.Client(api_key=api_key)
     try:
-        response = client.models.generate_content(
-            model=MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.2,
-                http_options=types.HttpOptions(timeout=int(REQUEST_TIMEOUT * 1000)),
-            ),
-        )
-        strategy = parse_strategy_response(response.text)
-        usage = response.usage_metadata
-        if usage is None:
-            raise ValueError("Gemini response is missing token usage metadata")
-        input_tokens = int(usage.prompt_token_count)
-        output_tokens = int(usage.candidates_token_count)
+        try:
+            response = client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.2,
+                    http_options=types.HttpOptions(timeout=int(REQUEST_TIMEOUT * 1000)),
+                ),
+            )
+        except errors.ClientError as error:
+            if error.code == 403 and "API_KEY_SERVICE_BLOCKED" in str(error):
+                raise RuntimeError(
+                    "Google blocked this API key from using the Gemini Developer API. "
+                    "In Google AI Studio or Google Cloud Console, update the key's API "
+                    "restrictions to allow the Generative Language API, or create a "
+                    "Gemini API key for a project with that API enabled."
+                ) from error
+            raise
+        input_tokens, output_tokens = _read_token_counts(response.usage_metadata)
         print(f"Input tokens: {input_tokens}", file=sys.stderr)
         print(f"Output tokens: {output_tokens}", file=sys.stderr)
         print(f"Total tokens: {input_tokens + output_tokens}", file=sys.stderr)
+        strategy = parse_strategy_response(response.text)
         strategy["llm_input_tokens"] = input_tokens
         strategy["llm_output_tokens"] = output_tokens
         return strategy
