@@ -42,7 +42,7 @@ class GeminiStrategyTests(unittest.TestCase):
         ):
             gemini_strategy.query_gemini("{}")
 
-        self.assertEqual(client_args, {"api_key": "test-key"})
+        self.assertEqual(client_args, {"api_key": "test-key", "vertexai": True})
         self.assertEqual(stderr.getvalue().splitlines(), [
             "Input tokens: 10",
             "Output tokens: 6",
@@ -60,7 +60,7 @@ class GeminiStrategyTests(unittest.TestCase):
 
         self.assertEqual(gemini_strategy._read_token_counts(usage), (10, 7))
 
-    def test_explains_blocked_gemini_api_key(self):
+    def test_explains_blocked_vertex_api_key(self):
         error = errors.ClientError(
             403,
             {
@@ -81,7 +81,7 @@ class GeminiStrategyTests(unittest.TestCase):
         with (
             mock.patch.object(gemini_strategy, "get_api_key", return_value="test-key"),
             mock.patch.object(gemini_strategy.genai, "Client", return_value=client),
-            self.assertRaisesRegex(RuntimeError, "Generative Language API"),
+            self.assertRaisesRegex(RuntimeError, "Vertex AI"),
         ):
             gemini_strategy.query_gemini("{}")
 

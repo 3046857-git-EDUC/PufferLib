@@ -105,7 +105,7 @@ def query_gemini(strategy_context):
         raise ValueError("GEMINI_API_KEY environment variable is missing or invalid.")
 
     prompt = build_strategy_prompt(strategy_context)
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(api_key=api_key, vertexai=True)
     try:
         try:
             response = client.models.generate_content(
@@ -120,10 +120,9 @@ def query_gemini(strategy_context):
         except errors.ClientError as error:
             if error.code == 403 and "API_KEY_SERVICE_BLOCKED" in str(error):
                 raise RuntimeError(
-                    "Google blocked this API key from using the Gemini Developer API. "
-                    "In Google AI Studio or Google Cloud Console, update the key's API "
-                    "restrictions to allow the Generative Language API, or create a "
-                    "Gemini API key for a project with that API enabled."
+                    "Google blocked this API key from using Vertex AI. Update the key's "
+                    "API restrictions to allow Vertex AI, or create a Vertex AI API key "
+                    "for a project with Vertex AI enabled."
                 ) from error
             raise
         input_tokens, output_tokens = _read_token_counts(response.usage_metadata)
