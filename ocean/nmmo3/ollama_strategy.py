@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn an NMMO3 strategy context into one validated action decision."""
+"""Turn an NMMO3 strategy context into dynamic reward weights."""
 
 import json
 import sys
@@ -10,65 +10,12 @@ import urllib.request
 import urllib.error
 
 from strategy_prompt import build_strategy_prompt
+from strategy_response import parse_strategy_response
 
 OLLAMA_URL = os.getenv("NMMO3_QWEN3_URL", "http://127.0.0.1:11434/api/generate")
 MODEL = os.getenv("NMMO3_QWEN3_MODEL", "qwen3:4b-thinking")
 REQUEST_TIMEOUT = float(os.getenv("NMMO3_QWEN3_TIMEOUT", "180"))
 CONNECTION_RETRIES = 3
-ACTION_MAP = {
-    "MOVE_DOWN": 0,
-    "MOVE_UP": 1,
-    "MOVE_RIGHT": 2,
-    "MOVE_LEFT": 3,
-    "NOOP": 4,
-    "ATTACK": 5,
-    "USE_ITEM_1": 8,
-    "USE_ITEM_2": 9,
-    "USE_ITEM_3": 10,
-    "USE_ITEM_4": 11,
-    "USE_ITEM_5": 12,
-    "USE_ITEM_6": 13,
-    "USE_ITEM_7": 14,
-    "USE_ITEM_8": 15,
-    "USE_ITEM_9": 16,
-    "USE_ITEM_0": 17,
-    "USE_ITEM_MINUS": 18,
-    "USE_ITEM_EQUALS": 19,
-    "BUY": 20,
-    "SELL": 21,
-    "MOVE_DOWN_SHIFT": 22,
-    "MOVE_UP_SHIFT": 23,
-    "MOVE_RIGHT_SHIFT": 24,
-    "MOVE_LEFT_SHIFT": 25,
-}
-
-
-def parse_strategy_response(response_text):
-    response_text = response_text.strip()
-    if response_text.startswith("```"):
-        response_text = response_text.split("\n", 1)[-1]
-        response_text = response_text.rsplit("```", 1)[0].strip()
-    permitted_strategies = {
-        "explore", "harvest", "equip", "trade", "engage_NPC",
-        "avoid_combat", "retreat", "recover",
-    }
-    strategy = json.loads(response_text)
-    if not isinstance(strategy, dict):
-        raise ValueError("strategy response must be a JSON object")
-    if strategy.get("strategy_id") not in permitted_strategies:
-        raise ValueError("invalid strategy_id")
-    required_sections = (
-        "strategy_parameters", "risk_parameters", "social_parameters",
-        "contingency_parameters",
-    )
-    if any(section not in strategy or not isinstance(strategy[section], dict)
-           for section in required_sections):
-        raise ValueError("strategy response is missing a required section")
-    if "confidence" not in strategy:
-        raise ValueError("strategy response is missing confidence")
-    return strategy
-
-
 def query_ollama(strategy_context):
     prompt = build_strategy_prompt(strategy_context)
     request = urllib.request.Request(

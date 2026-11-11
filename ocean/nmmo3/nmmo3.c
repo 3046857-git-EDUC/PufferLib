@@ -12,6 +12,8 @@
 // Only run 1 agent in the C version
 // You can run the full 1024 on GPU
 #define NUM_AGENTS 1
+#define MMONET_PROJ_SIZE (256 + 47 * 32 + 47 + 10)
+#define MMONET_LEGACY_PROJ_SIZE 1881
 
 typedef struct MMONet MMONet;
 struct MMONet {
@@ -25,6 +27,7 @@ struct MMONet {
     Conv2D* map_conv2;
     Embedding* player_embed;
     float* proj_buffer;
+    float* proj_parameters;
     Affine* proj;
     ReLU* proj_relu;
     Linear* decoder;
@@ -44,8 +47,27 @@ MMONet* init_mmonet(Weights* weights, int num_agents) {
     net->map_relu = make_relu(num_agents, 128*3*4);
     net->map_conv2 = make_conv2d(weights, num_agents, 4, 3, 128, 128, 3, 1);
     net->player_embed = make_embedding(weights, num_agents*47, 128, 32);
-    net->proj_buffer = calloc(num_agents*1881, sizeof(float));
-    net->proj = make_affine(weights, num_agents, 1881, hidden);
+    net->proj_buffer = calloc(num_agents * MMONET_PROJ_SIZE, sizeof(float));
+    {
+        float* legacy_proj_weights = get_weights(
+            weights, MMONET_LEGACY_PROJ_SIZE * hidden);
+        float* legacy_proj_bias = get_weights(weights, hidden);
+        net->proj_parameters = calloc(
+            MMONET_PROJ_SIZE * hidden + hidden, sizeof(float));
+        for (int output = 0; output < hidden; output++) {
+            memcpy(net->proj_parameters + output * MMONET_PROJ_SIZE,
+                legacy_proj_weights + output * MMONET_LEGACY_PROJ_SIZE,
+                MMONET_PROJ_SIZE * sizeof(float));
+        }
+        memcpy(net->proj_parameters + MMONET_PROJ_SIZE * hidden,
+            legacy_proj_bias, hidden * sizeof(float));
+        Weights projection_weights = {
+            .data = net->proj_parameters,
+            .size = MMONET_PROJ_SIZE * hidden + hidden,
+        };
+        // Drop the legacy LLM feature columns while retaining the other checkpoint weights.
+        net->proj = make_affine(&projection_weights, num_agents, MMONET_PROJ_SIZE, hidden);
+    }
     net->proj_relu = make_relu(num_agents, hidden);
     net->decoder = make_linear(weights, num_agents, hidden, 26 + 1);
     net->mingru = make_mingru(weights, num_agents, hidden, 4);
@@ -64,6 +86,7 @@ void free_mmonet(MMONet* net) {
     free(net->map_conv2);
     free(net->player_embed);
     free(net->proj_buffer);
+    free(net->proj_parameters);
     free(net->proj);
     free(net->proj_relu);
     free(net->decoder);
@@ -92,7 +115,7 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
     int factors[10] = {4, 4, 17, 5, 3, 5, 5, 5, 7, 4};
     float (*ob_map)[59][11][15] = (float (*)[59][11][15])net->ob_map;
     for (int b = 0; b < net->num_agents; b++) {
-        int b_offset = b*(11*15*10 + 47 + 10 + 64);
+        int b_offset = b * NMMO3_OBS_SIZE;
         for (int i = 0; i < 11; i++) {
             for (int j = 0; j < 15; j++) {
                 int f_offset = 0;
@@ -111,7 +134,7 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
     // Player embedding subnetwork
     for (int b = 0; b < net->num_agents; b++) {
         for (int i = 0; i < 47; i++) {
-            unsigned char ob = observations[b*(11*15*10 + 47 + 10 + 64) + 11*15*10 + i];
+            unsigned char ob = observations[b * NMMO3_OBS_SIZE + 11 * 15 * 10 + i];
             net->ob_player_discrete[b*47 + i] = ob;
             net->ob_player_continuous[b*47 + i] = ob;
         }
@@ -121,12 +144,13 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
     // Rewards
     for (int b = 0; b < net->num_agents; b++) {
         for (int i = 0; i < 10; i++) {
-            net->ob_reward[b*10 + i] = observations[b*(11*15*10 + 47 + 10 + 64) + 11*15*10 + 47 + i];
+            net->ob_reward[b * 10 + i] =
+                observations[b * NMMO3_OBS_SIZE + 11 * 15 * 10 + 47 + i];
         }
     }
 
     for (int b = 0; b < net->num_agents; b++) {
-        int b_offset = b*1881;
+        int b_offset = b * MMONET_PROJ_SIZE;
         for (int i = 0; i < 256; i++) {
             net->proj_buffer[b_offset + i] = net->map_conv2->output[b*256 + i];
         }
@@ -145,10 +169,6 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
         for (int i = 0; i < 10; i++) {
             net->proj_buffer[b_offset + i] = net->ob_reward[b*10 + i];
         }
-        b_offset += 10;
-        for (int i = 0; i < 64; i++) {
-            net->proj_buffer[b_offset + i] = observations[b*(11*15*10 + 47 + 10 + 64) + 11*15*10 + 47 + 10 + i];
-        }
     }
 
     affine(net->proj, net->proj_buffer);
@@ -158,86 +178,6 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
     linear(net->decoder, net->mingru->output);
 
     softmax_multidiscrete(net->multidiscrete, net->decoder->output, actions);
-}
-
-static int query_llm_strategy(MMO* env, int pid) {
-    int input_pipe[2];
-    int output_pipe[2];
-    pid_t child;
-    StrategyContext context;
-    char response[2048];
-    ssize_t bytes_read;
-    int status;
-    int action = ATN_NOOP;
-
-    if (build_strategy_context(env, pid, &context) < 0 ||
-        pipe(input_pipe) < 0 || pipe(output_pipe) < 0) {
-        return ATN_NOOP;
-    }
-
-    child = fork();
-    if (child == 0) {
-        const char* python = getenv("NMMO3_STRATEGY_PYTHON");
-        const char* script = getenv("NMMO3_STRATEGY_SCRIPT");
-        if (python == NULL || python[0] == '\0') {
-            python = "python3";
-        }
-        if (script == NULL || script[0] == '\0') {
-            script = "ocean/nmmo3/ollama_strategy.py";
-        }
-        dup2(input_pipe[0], STDIN_FILENO);
-        dup2(output_pipe[1], STDOUT_FILENO);
-        close(input_pipe[0]);
-        close(input_pipe[1]);
-        close(output_pipe[0]);
-        close(output_pipe[1]);
-        execlp(python, python, script, (char*)NULL);
-        _exit(127);
-    }
-    if (child < 0) {
-        close(input_pipe[0]);
-        close(input_pipe[1]);
-        close(output_pipe[0]);
-        close(output_pipe[1]);
-        return ATN_NOOP;
-    }
-
-    close(input_pipe[0]);
-    close(output_pipe[1]);
-    (void)write(input_pipe[1], context.text, strlen(context.text));
-    close(input_pipe[1]);
-
-    bytes_read = read(output_pipe[0], response, sizeof(response) - 1);
-    close(output_pipe[0]);
-    waitpid(child, &status, 0);
-    if (bytes_read <= 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        return ATN_NOOP;
-    }
-    response[bytes_read] = '\0';
-
-    {
-        char* action_field = strstr(response, "\"action_code\"");
-        if (action_field) {
-            (void)sscanf(action_field, "\"action_code\"%*[^0-9]%d", &action);
-        }
-    }
-    if (action < ATN_DOWN || action > ATN_LEFT_SHIFT || action == 6) {
-        return ATN_NOOP;
-    }
-    return action;
-}
-
-static const char* action_name(int action) {
-    static const char* names[26] = {
-        "MOVE_DOWN", "MOVE_UP", "MOVE_RIGHT", "MOVE_LEFT", "NOOP",
-        "ATTACK", "INVALID", "UI", "USE_ITEM_1", "USE_ITEM_2",
-        "USE_ITEM_3", "USE_ITEM_4", "USE_ITEM_5", "USE_ITEM_6",
-        "USE_ITEM_7", "USE_ITEM_8", "USE_ITEM_9", "USE_ITEM_0",
-        "USE_ITEM_MINUS", "USE_ITEM_EQUALS", "BUY", "SELL",
-        "MOVE_DOWN_SHIFT", "MOVE_UP_SHIFT", "MOVE_RIGHT_SHIFT",
-        "MOVE_LEFT_SHIFT"
-    };
-    return action >= 0 && action < 26 ? names[action] : "INVALID";
 }
 
 void demo(int num_players) {
@@ -265,6 +205,7 @@ void demo(int num_players) {
         .reward_item_level = 1.0,
         .reward_market = 0.0,
         .reward_death = -1.0,
+        .reward_exploration = 1.0,
     };
     allocate_mmo(&env);
 
@@ -273,23 +214,13 @@ void demo(int num_players) {
 
     float human_action = ATN_NOOP;
     bool human_mode = false;
-    const char* use_strat_env = getenv("NMMO3_USE_STRATEGY");
-    const char* use_qwen3_env = getenv("NMMO3_USE_QWEN3");
-    bool use_llm_strategy = (use_strat_env != NULL && (strcmp(use_strat_env, "1") == 0 || strcmp(use_strat_env, "true") == 0)) ||
-                            (use_qwen3_env != NULL && (strcmp(use_qwen3_env, "1") == 0 || strcmp(use_qwen3_env, "true") == 0));
     int i = 1;
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_LEFT_CONTROL)) {
             human_mode = !human_mode;
         }
         if (i % 36 == 0) {
-            if (use_llm_strategy) {
-                env.actions[0] = query_llm_strategy(&env, 0);
-                printf("LLM recommended action: %s (%d)\n",
-                    action_name((int)env.actions[0]), (int)env.actions[0]);
-            } else {
-                forward(net, env.observations, env.terminals, env.actions);
-            }
+            forward(net, env.observations, env.terminals, env.actions);
             if (human_mode) {
                 env.actions[0] = human_action;
             }
@@ -329,6 +260,7 @@ void test_mmonet_performance(int num_players, int timeout) {
         .item_respawn_ticks = 200,
         .x_window = 7,
         .y_window = 5,
+        .reward_exploration = 1.0,
     };
     allocate_mmo(&env);
     c_reset(&env);
@@ -543,6 +475,7 @@ void test_performance(int num_players, int timeout) {
         .item_respawn_ticks = 200,
         .x_window = 7,
         .y_window = 5,
+        .reward_exploration = 1.0,
     };
     allocate_mmo(&env);
     c_reset(&env);
@@ -588,6 +521,7 @@ void test_no_render_log(int num_players, int target_episodes) {
         .reward_item_level = 1.0,
         .reward_market = 0.0,
         .reward_death = -1.0,
+        .reward_exploration = 1.0,
     };
     allocate_mmo(&env);
     c_reset(&env);

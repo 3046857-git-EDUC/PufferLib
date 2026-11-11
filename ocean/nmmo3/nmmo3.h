@@ -231,9 +231,11 @@ struct Log {
     float return_prof_lvl;
     float return_item_atk_lvl;
     float return_item_def_lvl;
+    float return_item_tool_lvl;
     float return_market_buy;
     float return_market_sell;
     float return_death;
+    float return_pioneer;
     float min_comb_prof;
     float purchases;
     float sales;
@@ -610,7 +612,7 @@ void init_items() {
 #define STRATEGY_HISTORY_ENTRY_SIZE 96
 #define QWEN3_HISTORY_SIZE STRATEGY_HISTORY_SIZE
 #define QWEN3_HISTORY_ENTRY_SIZE STRATEGY_HISTORY_ENTRY_SIZE
-#define NMMO3_STRATEGY_DIM 64
+#define NMMO3_OBS_SIZE (11 * 15 * 10 + 47 + 10)
 
 typedef struct MarketOffer MarketOffer;
 struct MarketOffer {
@@ -647,6 +649,16 @@ struct Reward{
     float item_tool_lvl;
     float market_buy;
     float market_sell;
+};
+
+typedef struct RewardWeights RewardWeights;
+struct RewardWeights {
+    float combat_level;
+    float prof_level;
+    float item_level;
+    float market;
+    float death;
+    float exploration;
 };
 
 typedef struct Respawnable Respawnable;
@@ -749,10 +761,11 @@ struct MMO {
     float reward_item_level;
     float reward_market;
     float reward_death;
-    int strategy_current_action;
+    float reward_exploration;
+    RewardWeights default_reward_weights;
+    int reward_weights_expire_tick;
     unsigned long long llm_cumulative_input_tokens;
     unsigned long long llm_cumulative_output_tokens;
-    unsigned char strategy_features[NMMO3_STRATEGY_DIM];
     int strategy_pid;
     int strategy_output_fd;
     char strategy_response[2048];
@@ -778,9 +791,11 @@ void add_player_log(MMO* env, int pid) {
     log->return_prof_lvl += ret->prof_lvl;
     log->return_item_atk_lvl += ret->item_atk_lvl;
     log->return_item_def_lvl += ret->item_def_lvl;
+    log->return_item_tool_lvl += ret->item_tool_lvl;
     log->return_market_buy += ret->market_buy;
     log->return_market_sell += ret->market_sell;
     log->return_death += ret->death;
+    log->return_pioneer += ret->pioneer;
     log->min_comb_prof += (player->prof_lvl > player->comb_lvl) ? player->comb_lvl : player->prof_lvl;
     log->purchases += player->purchases;
     log->sales += player->sales;
@@ -794,9 +809,9 @@ void add_player_log(MMO* env, int pid) {
     log->c += player->c;
     log->episode_return += (
         ret->comb_lvl + ret->prof_lvl
-        + ret->item_atk_lvl + ret->item_def_lvl
+        + ret->item_atk_lvl + ret->item_def_lvl + ret->item_tool_lvl
         + ret->market_buy + ret->market_sell
-        + ret->death
+        + ret->death + ret->pioneer
     );
     log->episode_length += player->time_alive;
     log->score = log->min_comb_prof;
@@ -810,7 +825,15 @@ void add_player_log(MMO* env, int pid) {
 
 void init(MMO* env) {
     init_items();
-    env->strategy_current_action = ATN_NOOP;
+    env->default_reward_weights = (RewardWeights){
+        .combat_level = env->reward_combat_level,
+        .prof_level = env->reward_prof_level,
+        .item_level = env->reward_item_level,
+        .market = env->reward_market,
+        .death = env->reward_death,
+        .exploration = env->reward_exploration,
+    };
+    env->reward_weights_expire_tick = 0;
     env->llm_cumulative_input_tokens = 0;
     env->llm_cumulative_output_tokens = 0;
     env->strategy_pid = -1;
@@ -818,7 +841,6 @@ void init(MMO* env) {
     env->strategy_response_bytes = 0;
     env->strategy_history_count = 0;
     env->strategy_history_next = 0;
-    memset(env->strategy_features, 0, sizeof(env->strategy_features));
     memset(env->strategy_history, 0, sizeof(env->strategy_history));
 
     int sz = env->width*env->height;
@@ -848,7 +870,7 @@ void init(MMO* env) {
 
 void allocate_mmo(MMO* env) {
     // TODO: Not hardcode
-    env->observations = calloc(env->num_agents*(11*15*10+47+10+NMMO3_STRATEGY_DIM), sizeof(unsigned char));
+    env->observations = calloc(env->num_agents * NMMO3_OBS_SIZE, sizeof(unsigned char));
     env->rewards = calloc(env->num_agents, sizeof(float));
     env->terminals = calloc(env->num_agents, sizeof(float));
     env->actions = calloc(env->num_agents, sizeof(float));
@@ -999,7 +1021,7 @@ void compute_all_obs(MMO* env) {
         assert(end_col <= env->width);
 
         int comb_lvl = player->comb_lvl;
-        int obs_adr = pid*(11*15*10+47+10+NMMO3_STRATEGY_DIM);
+        int obs_adr = pid * NMMO3_OBS_SIZE;
         for (int obs_r = start_row; obs_r < end_row; obs_r++) {
             for (int obs_c = start_col; obs_c < end_col; obs_c++) {
                 int map_adr = map_offset(env, obs_r, obs_c);
@@ -1076,9 +1098,6 @@ void compute_all_obs(MMO* env) {
         env->observations[obs_adr+54] = reward->market_buy / 20;
         env->observations[obs_adr+55] = reward->market_sell / 20;
 
-        for (int j = 0; j < NMMO3_STRATEGY_DIM; j++) {
-            env->observations[obs_adr+56+j] = env->strategy_features[j];
-        }
     }
 }
 
@@ -1265,6 +1284,8 @@ inline bool dest_check(MMO* env, int r, int c) {
 }
 
 int nmmo3_strategy_step(MMO* env, int pid);
+void nmmo3_restore_default_reward_weights(MMO* env);
+void nmmo3_expire_reward_weights(MMO* env);
 #define nmmo3_qwen3_strategy nmmo3_strategy_step
 void move(MMO* env, int pid, int direction, bool run) {
     Entity* entity = get_entity(env, pid);
@@ -1301,7 +1322,8 @@ void move(MMO* env, int pid, int direction, bool run) {
     // Update visitation map. Skips run tiles
     if (entity->type == ENTITY_PLAYER) {
         if (env->counts[map_offset(env, rr, cc)] == 0) {
-            env->reward_struct[pid].pioneer = 1.0;
+            env->reward_struct[pid].pioneer = env->reward_exploration;
+            env->returns[pid].pioneer += env->reward_exploration;
         }
         if (env->counts[map_offset(env, rr, cc)] < 255) {
             env->counts[map_offset(env, rr, cc)] += 1;
@@ -1481,7 +1503,6 @@ void attack(MMO* env, int pid, int target_id) {
         Reward* ret = &env->returns[target_id];
         reward->death = env->reward_death;
         ret->death += env->reward_death;
-        env->reward_struct[target_id].death = -1;
         add_player_log(env, target_id);
     } else {
         // Add to respawn buffer
@@ -1592,6 +1613,7 @@ void use_item(MMO* env, int pid, int inventory_idx) {
         player->equipment_defense -= defense;
         if (item_type == I_TOOL) {
             reward->item_tool_lvl = -item_reward;
+            ret->item_tool_lvl -= item_reward;
         } else {
             if (attack > 0) {
                 reward->item_atk_lvl = -item_reward;
@@ -1621,6 +1643,7 @@ void use_item(MMO* env, int pid, int inventory_idx) {
     player->equipment_defense += defense;
     if (item_type == I_TOOL) {
         reward->item_tool_lvl = item_reward;
+        ret->item_tool_lvl += item_reward;
     } else {
         if (attack > 0) {
             reward->item_atk_lvl = item_reward;
@@ -1707,6 +1730,7 @@ void enemy_ai(MMO* env, int pid) {
 
 void c_reset(MMO* env) {
     env->tick = 0;
+    nmmo3_restore_default_reward_weights(env);
 
     env->market_sells = 0;
     env->market_buys = 0;
@@ -1911,6 +1935,7 @@ void c_reset(MMO* env) {
 void c_step(MMO* env) {
     env->tick += 1;
     int tick = env->tick;
+    nmmo3_expire_reward_weights(env);
     env->log.llm_cumulative_input_tokens =
         (float)env->llm_cumulative_input_tokens;
     env->log.llm_cumulative_output_tokens =
@@ -2235,7 +2260,8 @@ void c_step(MMO* env) {
         env->rewards[pid] = (
             reward->death + reward->comb_lvl
             + reward->prof_lvl + reward->item_atk_lvl + reward->item_def_lvl
-            + reward->market_buy + reward->market_sell
+            + reward->item_tool_lvl + reward->market_buy + reward->market_sell
+            + reward->pioneer
         );
     }
 }

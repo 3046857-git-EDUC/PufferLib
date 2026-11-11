@@ -18,9 +18,29 @@ SO = os.path.join(os.path.dirname(__file__), "ocean_test.so")
 
 
 def build():
+    cudnn_include = next(
+        (path for path in ("/usr/local/cuda/include", "/usr/include")
+         if os.path.isfile(os.path.join(path, "cudnn.h"))),
+        None,
+    )
+    cudnn_lib = next(
+        (path for path in ("/usr/local/cuda/lib64", "/usr/lib/x86_64-linux-gnu")
+         if os.path.isfile(os.path.join(path, "libcudnn.so"))),
+        None,
+    )
+    if cudnn_include is None or cudnn_lib is None:
+        try:
+            import nvidia.cudnn
+        except ImportError as error:
+            raise RuntimeError("cuDNN headers and libraries are required for this test") from error
+        cudnn_path = nvidia.cudnn.__path__[0]
+        cudnn_include = cudnn_include or os.path.join(cudnn_path, "include")
+        cudnn_lib = cudnn_lib or os.path.join(cudnn_path, "lib")
     cmd = [
         "nvcc", "-shared", "-o", SO, SRC,
-        "-I", os.path.join(os.path.dirname(__file__), "..", "pufferlib", "src"),
+        "-I", os.path.join(os.path.dirname(__file__), "..", "src"),
+        "-I", cudnn_include, "-L", cudnn_lib,
+        "-Xlinker", "-rpath", "-Xlinker", cudnn_lib,
         "-lcublas", "-lcudnn", "-lcurand",
         "--compiler-options", "-fPIC", "-Xcompiler", "-O2",
     ]
@@ -44,7 +64,7 @@ class NMMO3EncoderRef(nn.Module):
         self.conv1 = nn.Conv2d(59, 128, 5, stride=3)
         self.conv2 = nn.Conv2d(128, 128, 3, stride=1)
         self.embed = nn.Embedding(128, 32)
-        self.proj = nn.Linear(1881, 512)
+        self.proj = nn.Linear(1817, 512)
 
     def forward(self, observations):
         B = observations.shape[0]
@@ -57,9 +77,8 @@ class NMMO3EncoderRef(nn.Module):
         ob_player = observations[:, 1650:1697]
         player_embed = self.embed(ob_player.int()).flatten(1)
         ob_reward = observations[:, 1697:1707]
-        ob_strategy = observations[:, 1707:1771]
         cat = torch.cat([x, player_embed, ob_player.float(),
-                 ob_reward.float(), ob_strategy.float()], dim=1)
+                 ob_reward.float()], dim=1)
         return F.relu(self.proj(cat))
 
 
@@ -94,7 +113,7 @@ def extract_weights(model):
 
 
 def generate_valid_obs(B, device):
-    obs = torch.zeros(B, 1771, dtype=torch.float32, device=device)
+    obs = torch.zeros(B, 1707, dtype=torch.float32, device=device)
     for h in range(11):
         for w in range(15):
             for f in range(10):
@@ -102,7 +121,6 @@ def generate_valid_obs(B, device):
                 obs[:, idx] = torch.randint(0, FACTORS[f], (B,)).float()
     obs[:, 1650:1697] = torch.randint(0, 128, (B, 47)).float()
     obs[:, 1697:1707] = torch.randint(0, 256, (B, 10)).float()
-    obs[:, 1707:1771] = torch.randint(0, 256, (B, 64)).float()
     return obs
 
 
@@ -191,12 +209,9 @@ def test_backward(lib, B):
     ob_player = obs[:, 1650:1697]
     player_embed = F.embedding(ob_player.int(), ew).flatten(1)
     ob_reward = obs[:, 1697:1707]
-    ob_strategy = obs[:, 1707:1771]
-
     # Concat + projection with CUDA's relu mask
     cat = torch.cat([conv2_out.flatten(1), player_embed,
-                     ob_player.detach().float(), ob_reward.detach().float(),
-                     ob_strategy.detach().float()], dim=1)
+                     ob_player.detach().float(), ob_reward.detach().float()], dim=1)
     proj_raw = F.linear(cat, pw, pb)
     proj_masked = proj_raw * (cuda_out > 0).float()
 
@@ -211,7 +226,7 @@ def test_backward(lib, B):
     # ---- Compare all weight grads ----
     tol = dict(atol=1e-2, rtol=1e-2)
 
-    cuda_proj_wgrad = torch.zeros(512, 1881, device=device)
+    cuda_proj_wgrad = torch.zeros(512, 1817, device=device)
     lib.nmmo3_test_get_proj_wgrad(ptr(cuda_proj_wgrad))
     check_match("proj_wgrad", cuda_proj_wgrad, pw.grad, **tol)
 

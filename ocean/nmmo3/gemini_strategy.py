@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-#"""Turn an NMMO3 strategy context into one validated action decision using Google Gemini."""
+"""Turn an NMMO3 strategy context into dynamic reward weights using Google Gemini."""
 
 import json
 import os
@@ -16,10 +16,10 @@ except ImportError as error:
     ) from error
 
 from strategy_prompt import build_strategy_prompt
+from strategy_response import parse_strategy_response
 
 MODEL = os.getenv("NMMO3_GEMINI_MODEL", "gemini-3.5-flash-lite")
 REQUEST_TIMEOUT = float(os.getenv("NMMO3_GEMINI_TIMEOUT", "60"))
-
 
 def get_api_key():
     key = os.getenv("GEMINI_API_KEY")
@@ -44,32 +44,6 @@ def get_api_key():
             except Exception:
                 pass
     return None
-
-
-def parse_strategy_response(response_text):
-    response_text = response_text.strip()
-    if response_text.startswith("```"):
-        response_text = response_text.split("\n", 1)[-1]
-        response_text = response_text.rsplit("```", 1)[0].strip()
-    permitted_strategies = {
-        "explore", "harvest", "equip", "trade", "engage_NPC",
-        "avoid_combat", "retreat", "recover",
-    }
-    strategy = json.loads(response_text)
-    if not isinstance(strategy, dict):
-        raise ValueError("strategy response must be a JSON object")
-    if strategy.get("strategy_id") not in permitted_strategies:
-        raise ValueError("invalid strategy_id")
-    required_sections = (
-        "strategy_parameters", "risk_parameters", "social_parameters",
-        "contingency_parameters",
-    )
-    if any(section not in strategy or not isinstance(strategy[section], dict)
-           for section in required_sections):
-        raise ValueError("strategy response is missing a required section")
-    if "confidence" not in strategy:
-        raise ValueError("strategy response is missing confidence")
-    return strategy
 
 
 def _read_token_counts(usage):

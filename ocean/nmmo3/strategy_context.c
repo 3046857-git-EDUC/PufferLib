@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <ctype.h>
+#include <errno.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -163,6 +165,16 @@ int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
         context->reward_death, context->reward_pioneer, context->reward_comb_lvl,
         context->reward_prof_lvl, context->reward_item_atk_lvl, context->reward_item_def_lvl,
         context->reward_item_tool_lvl, context->reward_market_buy, context->reward_market_sell);
+    offset = append_text(context->text, offset,
+        "\nREWARD_WEIGHTS_CURRENT\n"
+        "reward_combat_level=%.2f\nreward_prof_level=%.2f\n"
+        "reward_item_level=%.2f\nreward_market=%.2f\n"
+        "reward_death=%.2f\nreward_exploration=%.2f\n"
+        "ticks_until_default=%d\n",
+        env->reward_combat_level, env->reward_prof_level, env->reward_item_level,
+        env->reward_market, env->reward_death, env->reward_exploration,
+        env->reward_weights_expire_tick > env->tick
+            ? env->reward_weights_expire_tick - env->tick : 0);
 
     offset = append_text(context->text, offset, "\nNEARBY_PLAYERS count=%d\n", context->num_players);
     for (int i = 0; i < context->num_players; i++) {
@@ -190,15 +202,56 @@ int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
     return offset >= STRATEGY_CONTEXT_MAX ? STRATEGY_CONTEXT_MAX - 1 : offset;
 }
 
-static int parse_strategy_value(const char* response, const char* key, float* value) {
+static int parse_float_field(
+        const char* object, const char* key, float* value) {
     char pattern[96];
     const char* field;
+    const char* object_end = strchr(object, '}');
+    char* value_end;
+    float parsed;
+
     snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    field = strstr(response, pattern);
-    if (field == NULL || sscanf(field + strlen(pattern), " %*[: ] %f", value) != 1) {
+    field = strstr(object, pattern);
+    if (field == NULL || object_end == NULL || field > object_end) {
         return 0;
     }
-    return *value >= 0.0f && *value <= 1.0f;
+    field += strlen(pattern);
+    while (isspace((unsigned char)*field)) field++;
+    if (*field++ != ':') return 0;
+    while (isspace((unsigned char)*field)) field++;
+
+    errno = 0;
+    parsed = strtof(field, &value_end);
+    if (value_end == field || errno == ERANGE || !isfinite(parsed)) return 0;
+    while (isspace((unsigned char)*value_end)) value_end++;
+    if (*value_end != ',' && *value_end != '}') return 0;
+    *value = parsed;
+    return 1;
+}
+
+static int parse_positive_int(const char* response, const char* key, int* value) {
+    char pattern[96];
+    const char* field;
+    char* value_end;
+    long parsed;
+
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    field = strstr(response, pattern);
+    if (field == NULL) return 0;
+    field += strlen(pattern);
+    while (isspace((unsigned char)*field)) field++;
+    if (*field++ != ':') return 0;
+    while (isspace((unsigned char)*field)) field++;
+
+    errno = 0;
+    parsed = strtol(field, &value_end, 10);
+    if (value_end == field || errno == ERANGE || parsed <= 0 || parsed > INT_MAX) {
+        return 0;
+    }
+    while (isspace((unsigned char)*value_end)) value_end++;
+    if (*value_end != ',' && *value_end != '}') return 0;
+    *value = (int)parsed;
+    return 1;
 }
 
 static int parse_token_count(const char* response, const char* key, int* value) {
@@ -210,6 +263,15 @@ static int parse_token_count(const char* response, const char* key, int* value) 
         return 0;
     }
     return *value >= 0;
+}
+
+static int valid_reward_weights(const RewardWeights* weights) {
+    return weights->combat_level >= 0.0f && weights->combat_level <= 1.0f &&
+        weights->prof_level >= 0.0f && weights->prof_level <= 1.0f &&
+        weights->item_level >= 0.0f && weights->item_level <= 1.0f &&
+        weights->market >= 0.0f && weights->market <= 1.0f &&
+        weights->death >= -1.0f && weights->death <= 0.0f &&
+        weights->exploration >= 0.0f && weights->exploration <= 1.0f;
 }
 
 int nmmo3_strategy_step(MMO* env, int pid) {
@@ -231,18 +293,12 @@ int nmmo3_strategy_step(MMO* env, int pid) {
             env->strategy_response[env->strategy_response_bytes] = '\0';
             if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
                 int input_tokens, output_tokens;
-                static const char* names[8] = {
-                    "explore", "harvest", "equip", "trade",
-                    "engage_NPC", "avoid_combat", "retreat", "recover"
-                };
-                static const char* scalar_keys[10] = {
-                    "risk_tolerance", "combat_aggressiveness", "retreat_tendency",
-                    "cooperation", "competition", "trade_preference",
-                    "aggressive_opponent_response", "cooperative_opponent_response",
-                    "unexpected_event_response", "confidence"
-                };
-                float value;
-                int found = 0;
+                int horizon_ticks;
+                RewardWeights weights;
+                const char* weights_field = strstr(
+                    env->strategy_response, "\"reward_weights\"");
+                const char* weights_object = weights_field != NULL
+                    ? strchr(weights_field, '{') : NULL;
                 if (parse_token_count(env->strategy_response, "llm_input_tokens", &input_tokens) &&
                     parse_token_count(env->strategy_response, "llm_output_tokens", &output_tokens)) {
                     env->log.llm_input_tokens = (float)input_tokens;
@@ -256,35 +312,28 @@ int nmmo3_strategy_step(MMO* env, int pid) {
                 } else {
                     fprintf(stderr, "LLM response is missing valid token usage metadata\n");
                 }
-                const char* strategy_parameters = strstr(
-                    env->strategy_response, "\"strategy_parameters\"");
-                memset(env->strategy_features, 0, sizeof(env->strategy_features));
-                for (int i = 0; i < 8; i++) {
-                    if (strategy_parameters != NULL &&
-                        parse_strategy_value(strategy_parameters, names[i], &value)) {
-                        env->strategy_features[i] = (unsigned char)(value * 255.0f + 0.5f);
-                        found = 1;
-                    }
-                }
-                for (int i = 0; i < 10; i++) {
-                    if (parse_strategy_value(env->strategy_response, scalar_keys[i], &value)) {
-                        env->strategy_features[8 + i] = (unsigned char)(value * 255.0f + 0.5f);
-                        found = 1;
-                    }
-                }
-                for (int i = 0; i < 8; i++) {
-                    char expected[64];
-                    snprintf(expected, sizeof(expected), "\"strategy_id\": \"%s\"", names[i]);
-                    if (strstr(env->strategy_response, expected) != NULL) {
-                        env->strategy_features[18 + i] = 255;
-                        break;
-                    }
-                }
-                if (found) {
+                if (weights_object != NULL &&
+                    parse_float_field(weights_object, "reward_combat_level", &weights.combat_level) &&
+                    parse_float_field(weights_object, "reward_prof_level", &weights.prof_level) &&
+                    parse_float_field(weights_object, "reward_item_level", &weights.item_level) &&
+                    parse_float_field(weights_object, "reward_market", &weights.market) &&
+                    parse_float_field(weights_object, "reward_death", &weights.death) &&
+                    parse_float_field(weights_object, "reward_exploration", &weights.exploration) &&
+                    valid_reward_weights(&weights) &&
+                    parse_positive_int(env->strategy_response, "horizon_ticks", &horizon_ticks) &&
+                    horizon_ticks <= INT_MAX - env->tick) {
+                    env->reward_combat_level = weights.combat_level;
+                    env->reward_prof_level = weights.prof_level;
+                    env->reward_item_level = weights.item_level;
+                    env->reward_market = weights.market;
+                    env->reward_death = weights.death;
+                    env->reward_exploration = weights.exploration;
+                    env->reward_weights_expire_tick = env->tick + horizon_ticks;
                     env->log.strategy_updates += 1;
                     const char* backend = getenv("NMMO3_STRATEGY_BACKEND");
                     const char* backend_name = backend ? backend : "LLM";
-                    printf("\r\033[2K[%s] strategy update applied at tick %d", backend_name, env->tick);
+                    printf("\r\033[2K[%s] reward weights applied at tick %d for %d ticks",
+                        backend_name, env->tick, horizon_ticks);
                     fflush(stdout);
                     return 1;
                 }
@@ -337,4 +386,21 @@ int nmmo3_strategy_step(MMO* env, int pid) {
     env->strategy_output_fd = output_pipe[0];
     env->strategy_response_bytes = 0;
     return 0;
+}
+
+void nmmo3_restore_default_reward_weights(MMO* env) {
+    env->reward_combat_level = env->default_reward_weights.combat_level;
+    env->reward_prof_level = env->default_reward_weights.prof_level;
+    env->reward_item_level = env->default_reward_weights.item_level;
+    env->reward_market = env->default_reward_weights.market;
+    env->reward_death = env->default_reward_weights.death;
+    env->reward_exploration = env->default_reward_weights.exploration;
+    env->reward_weights_expire_tick = 0;
+}
+
+void nmmo3_expire_reward_weights(MMO* env) {
+    if (env->reward_weights_expire_tick > 0 &&
+        env->tick >= env->reward_weights_expire_tick) {
+        nmmo3_restore_default_reward_weights(env);
+    }
 }

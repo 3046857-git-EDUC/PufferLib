@@ -673,21 +673,21 @@ def load_config(env_name):
     parser.add_argument('--tag', type=str, default=None, help='Tag for experiment')
     parser.add_argument('--slowly', action='store_true', help='Use PyTorch training backend')
     parser.add_argument('--ollama-strategy', action='store_true',
-        help='Use Ollama/Qwen3 to override agent 0 actions in NMMO3')
+        help='Use Ollama/Qwen3 to adjust NMMO3 reward weights')
     parser.add_argument('--ollama-interval', type=int, default=720,
-        help='NMMO3 ticks between shared Qwen3 strategy decisions')
+        help='NMMO3 ticks between shared Qwen3 reward-weight updates')
     parser.add_argument('--gemini-strategy', action='store_true',
-        help='Use Google Gemini to provide high-level strategy decisions in NMMO3')
+        help='Use Google Gemini to adjust NMMO3 reward weights')
     parser.add_argument('--gemini-interval', type=int, default=720,
-        help='NMMO3 ticks between shared Gemini strategy decisions')
+        help='NMMO3 ticks between shared Gemini reward-weight updates')
     parser.add_argument('--gpt-strategy', action='store_true',
-        help='Use OpenAI GPT to provide high-level strategy decisions in NMMO3')
+        help='Use OpenAI GPT to adjust NMMO3 reward weights')
     parser.add_argument('--gpt-interval', type=int, default=720,
-        help='NMMO3 ticks between shared GPT strategy decisions')
+        help='NMMO3 ticks between shared GPT reward-weight updates')
     parser.add_argument('--openrouter-strategy', action='store_true',
-        help='Use OpenRouter Gemma to provide high-level strategy decisions in NMMO3')
+        help='Use OpenRouter Gemma to adjust NMMO3 reward weights')
     parser.add_argument('--openrouter-interval', type=int, default=720,
-        help='NMMO3 ticks between shared OpenRouter strategy decisions')
+        help='NMMO3 ticks between shared OpenRouter reward-weight updates')
     parser.add_argument('--save-frames', type=int, default=0)
     parser.add_argument('--gif-path', type=str, default='eval.gif')
     parser.add_argument('--fps', type=float, default=15)
@@ -785,7 +785,7 @@ def main():
         # Backward-compatibility environment variables
         os.environ['NMMO3_USE_QWEN3'] = '1'
         os.environ['NMMO3_QWEN3_INTERVAL'] = str(args['ollama_interval'])
-        print(f'Ollama/Qwen3 group strategy enabled: one decision every {args["ollama_interval"]} ticks')
+        print(f'Ollama/Qwen3 reward shaping enabled: update every {args["ollama_interval"]} ticks')
 
     if args.get('gemini_strategy'):
         if env_name != 'nmmo3':
@@ -816,7 +816,7 @@ def main():
         # Clear legacy Qwen3-specific flag
         os.environ['NMMO3_USE_QWEN3'] = '0'
         os.environ['NMMO3_QWEN3_INTERVAL'] = str(args['gemini_interval'])
-        print(f'Gemini group strategy enabled: one decision every {args["gemini_interval"]} ticks')
+        print(f'Gemini reward shaping enabled: update every {args["gemini_interval"]} ticks')
 
     if args.get('gpt_strategy'):
         if env_name != 'nmmo3':
@@ -847,7 +847,7 @@ def main():
         # Clear legacy Qwen3-specific flag
         os.environ['NMMO3_USE_QWEN3'] = '0'
         os.environ['NMMO3_QWEN3_INTERVAL'] = str(args['gpt_interval'])
-        print(f'OpenAI GPT group strategy enabled: one decision every {args["gpt_interval"]} ticks')
+        print(f'OpenAI GPT reward shaping enabled: update every {args["gpt_interval"]} ticks')
 
     if args.get('openrouter_strategy'):
         if env_name != 'nmmo3':
@@ -876,7 +876,7 @@ def main():
         os.environ['NMMO3_STRATEGY_INTERVAL'] = str(args['openrouter_interval'])
         os.environ['NMMO3_USE_QWEN3'] = '0'
         os.environ['NMMO3_QWEN3_INTERVAL'] = str(args['openrouter_interval'])
-        print(f'OpenRouter Gemma strategy enabled: one decision every {args["openrouter_interval"]} ticks')
+        print(f'OpenRouter Gemma reward shaping enabled: update every {args["openrouter_interval"]} ticks')
 
     if 'train' in mode:
         train(env_name=env_name, args=args)

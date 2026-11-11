@@ -1,6 +1,6 @@
 #include "nmmo3.h"
 #include "strategy_context.c"
-#define OBS_SIZE 1771
+#define OBS_SIZE NMMO3_OBS_SIZE
 #define NUM_ATNS 1
 #define ACT_SIZES {26}
 #define OBS_TENSOR_T ByteTensor
@@ -29,6 +29,7 @@ void my_init(Env* env, Dict* kwargs) {
     env->reward_item_level = dict_get(kwargs, "reward_item_level")->value;
     env->reward_market = dict_get(kwargs, "reward_market")->value;
     env->reward_death = dict_get(kwargs, "reward_death")->value;
+    env->reward_exploration = dict_get(kwargs, "reward_exploration")->value;
     init(env);
 }
 
@@ -41,9 +42,11 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "return_prof_lvl", log->return_prof_lvl);
     dict_set(out, "return_item_atk_lvl", log->return_item_atk_lvl);
     dict_set(out, "return_item_def_lvl", log->return_item_def_lvl);
+    dict_set(out, "return_item_tool_lvl", log->return_item_tool_lvl);
     dict_set(out, "return_market_buy", log->return_market_buy);
     dict_set(out, "return_market_sell", log->return_market_sell);
     dict_set(out, "return_death", log->return_death);
+    dict_set(out, "return_pioneer", log->return_pioneer);
     dict_set(out, "min_comb_prof", log->min_comb_prof);
     dict_set(out, "purchases", log->purchases);
     dict_set(out, "sales", log->sales);
