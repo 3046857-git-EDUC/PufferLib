@@ -8,10 +8,11 @@ REWARD_WEIGHT_KEYS = (
     "reward_item_level",
     "reward_market",
     "reward_death",
-    "reward_exploration",
 )
-EXPECTED_RESPONSE_KEYS = {"reward_weights", "horizon_ticks"}
-MAX_HORIZON_TICKS = 2_147_483_647
+EXPECTED_RESPONSE_KEYS = {"reward_weights", "gamma_exploration", "horizon_ticks"}
+MAX_HORIZON_TICKS = 50
+MIN_GAMMA_EXPLORATION = 0.74
+MAX_GAMMA_EXPLORATION = 0.9999999
 
 
 def parse_strategy_response(response_text):
@@ -24,7 +25,9 @@ def parse_strategy_response(response_text):
     if not isinstance(strategy, dict):
         raise ValueError("strategy response must be a JSON object")
     if set(strategy) != EXPECTED_RESPONSE_KEYS:
-        raise ValueError("strategy response must contain only reward_weights and horizon_ticks")
+        raise ValueError(
+            "strategy response must contain only reward_weights, gamma_exploration, and horizon_ticks"
+        )
 
     reward_weights = strategy.get("reward_weights")
     if not isinstance(reward_weights, dict) or set(reward_weights) != set(REWARD_WEIGHT_KEYS):
@@ -46,9 +49,21 @@ def parse_strategy_response(response_text):
         if not valid_range:
             raise ValueError(f"reward_weights.{key} is outside its allowed range")
 
+    gamma_exploration = strategy.get("gamma_exploration")
+    if isinstance(gamma_exploration, bool) or not isinstance(gamma_exploration, (int, float)):
+        raise ValueError("gamma_exploration must be a number")
+    try:
+        finite_gamma = math.isfinite(gamma_exploration)
+    except OverflowError:
+        finite_gamma = False
+    if not finite_gamma:
+        raise ValueError("gamma_exploration must be finite")
+    if not MIN_GAMMA_EXPLORATION < gamma_exploration < MAX_GAMMA_EXPLORATION:
+        raise ValueError("gamma_exploration is outside its allowed range")
+
     horizon_ticks = strategy.get("horizon_ticks")
     if (isinstance(horizon_ticks, bool) or not isinstance(horizon_ticks, int)
             or horizon_ticks <= 0 or horizon_ticks > MAX_HORIZON_TICKS):
-        raise ValueError("horizon_ticks must be a positive 32-bit integer")
+        raise ValueError("horizon_ticks must be an integer from 1 through 50")
 
     return strategy

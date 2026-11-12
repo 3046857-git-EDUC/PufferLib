@@ -94,6 +94,8 @@ typedef struct StaticVec {
     int num_atns;
     int action_mask_size;        // 0 unless env defines MY_ACTION_MASK
     int gpu;
+    float* gamma_history;        // Optional per-tick NMMO gamma values (horizon, agents)
+    int gamma_horizon;
     // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
     // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
     int* agent_perm;
@@ -116,6 +118,8 @@ void static_vec_reset(StaticVec* vec);
 void static_vec_close(StaticVec* vec);
 void static_vec_log(StaticVec* vec, Dict* out);
 void static_vec_eval_log(StaticVec* vec, Dict* out);
+void static_vec_get_gammas(StaticVec* vec, float* out);
+void static_vec_record_gammas(StaticVec* vec, int buffer, int tick);
 void create_static_threads(StaticVec* vec, int num_threads, int horizon,
     void* ctx, net_callback_fn net_callback, thread_init_fn thread_init);
 void static_vec_omp_step(StaticVec* vec);
@@ -292,6 +296,7 @@ static void* static_omp_threadmanager(void* arg) {
             for (int i = env_start; i < env_start + env_count; i++) {
                 c_step(&envs[i]);
             }
+            static_vec_record_gammas(vec, buf, t);
             clock_gettime(CLOCK_MONOTONIC, &t1);
             my_accum[EVAL_ENV_STEP] += (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_nsec - t0.tv_nsec) / 1e6f;
 
@@ -585,6 +590,15 @@ void static_vec_reset(StaticVec* vec) {
 
 void create_static_threads(StaticVec* vec, int num_threads, int horizon,
         void* ctx, net_callback_fn net_callback, thread_init_fn thread_init) {
+#ifdef MY_USES_GAMMA
+    vec->gamma_horizon = horizon;
+    vec->gamma_history = (float*)calloc(
+        (size_t)horizon * vec->total_agents, sizeof(float));
+    if (vec->gamma_history == NULL) {
+        fprintf(stderr, "Failed to allocate per-tick gamma history\n");
+        abort();
+    }
+#endif
     vec->threading = (StaticThreading*)calloc(1, sizeof(StaticThreading));
     vec->threading->num_threads = num_threads;
     vec->threading->num_buffers = vec->buffers;
@@ -632,6 +646,7 @@ void static_vec_close(StaticVec* vec) {
     }
     free(vec->buffer_env_starts);
     free(vec->buffer_env_counts);
+    free(vec->gamma_history);
 
     if (vec->gpu) {
         cudaDeviceSynchronize();
@@ -707,6 +722,52 @@ static inline float static_vec_aggregate_logs(StaticVec* vec, Log* out) {
     out->llm_cumulative_output_tokens = llm_cumulative_output_tokens;
 #endif
     return n;
+}
+
+void static_vec_get_gammas(StaticVec* vec, float* out) {
+#ifdef MY_USES_GAMMA
+    Env* envs = (Env*)vec->envs;
+    for (int buf = 0; buf < vec->buffers; buf++) {
+        int slot = buf * vec->agents_per_buffer;
+        int env_start = vec->buffer_env_starts[buf];
+        int env_count = vec->buffer_env_counts[buf];
+        for (int e = 0; e < env_count; e++) {
+            Env* env = &envs[env_start + e];
+            for (int agent = 0; agent < env->num_agents; agent++) {
+                out[slot + agent] = env->gamma_exploration;
+            }
+            slot += env->num_agents;
+        }
+    }
+#else
+    for (int i = 0; i < vec->total_agents; i++) out[i] = -1.0f;
+#endif
+}
+
+void static_vec_record_gammas(StaticVec* vec, int buffer, int tick) {
+    if (vec->gamma_history == NULL) return;
+#ifdef MY_USES_GAMMA
+    if (tick < 0 || tick >= vec->gamma_horizon) {
+        fprintf(stderr, "Gamma history tick is outside the rollout horizon\n");
+        abort();
+    }
+    Env* envs = (Env*)vec->envs;
+    int slot = buffer * vec->agents_per_buffer;
+    int env_start = vec->buffer_env_starts[buffer];
+    int env_count = vec->buffer_env_counts[buffer];
+    size_t tick_offset = (size_t)tick * vec->total_agents;
+    for (int e = 0; e < env_count; e++) {
+        Env* env = &envs[env_start + e];
+        for (int agent = 0; agent < env->num_agents; agent++) {
+            vec->gamma_history[tick_offset + slot + agent] =
+                env->gamma_exploration;
+        }
+        slot += env->num_agents;
+    }
+#else
+    (void)buffer;
+    (void)tick;
+#endif
 }
 
 #ifdef MY_LOG_LLM_TOKENS

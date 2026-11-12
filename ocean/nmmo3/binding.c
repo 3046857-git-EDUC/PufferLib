@@ -4,6 +4,7 @@
 #define NUM_ATNS 1
 #define ACT_SIZES {26}
 #define OBS_TENSOR_T ByteTensor
+#define MY_USES_GAMMA
 #define MY_LOG_LLM_TOKENS
 
 #define Env MMO
@@ -29,7 +30,7 @@ void my_init(Env* env, Dict* kwargs) {
     env->reward_item_level = dict_get(kwargs, "reward_item_level")->value;
     env->reward_market = dict_get(kwargs, "reward_market")->value;
     env->reward_death = dict_get(kwargs, "reward_death")->value;
-    env->reward_exploration = dict_get(kwargs, "reward_exploration")->value;
+    env->gamma_default = dict_get(kwargs, "gamma_default")->value;
     init(env);
 }
 
@@ -46,7 +47,6 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "return_market_buy", log->return_market_buy);
     dict_set(out, "return_market_sell", log->return_market_sell);
     dict_set(out, "return_death", log->return_death);
-    dict_set(out, "return_pioneer", log->return_pioneer);
     dict_set(out, "min_comb_prof", log->min_comb_prof);
     dict_set(out, "purchases", log->purchases);
     dict_set(out, "sales", log->sales);

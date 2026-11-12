@@ -16,9 +16,9 @@ class StrategyResponseTests(unittest.TestCase):
                 "reward_item_level": 0.7,
                 "reward_market": 0.2,
                 "reward_death": -1.0,
-                "reward_exploration": 0.5,
             },
-            "horizon_ticks": 720,
+            "gamma_exploration": 0.85,
+            "horizon_ticks": 50,
         }
 
     def test_accepts_reward_weights_and_horizon(self):
@@ -26,8 +26,20 @@ class StrategyResponseTests(unittest.TestCase):
 
         self.assertEqual(parsed, self.response)
 
-    def test_rejects_missing_weights(self):
-        del self.response["reward_weights"]["reward_exploration"]
+    def test_rejects_missing_gamma(self):
+        del self.response["gamma_exploration"]
+
+        with self.assertRaisesRegex(ValueError, "gamma_exploration"):
+            parse_strategy_response(json.dumps(self.response))
+
+    def test_rejects_extra_response_keys(self):
+        self.response["return_pioneer"] = 0
+
+        with self.assertRaisesRegex(ValueError, "only reward_weights"):
+            parse_strategy_response(json.dumps(self.response))
+
+    def test_rejects_extra_weights(self):
+        self.response["reward_weights"]["reward_exploration"] = 0.5
 
         with self.assertRaisesRegex(ValueError, "supported weight keys"):
             parse_strategy_response(json.dumps(self.response))
@@ -47,8 +59,21 @@ class StrategyResponseTests(unittest.TestCase):
     def test_rejects_non_positive_horizon(self):
         self.response["horizon_ticks"] = 0
 
-        with self.assertRaisesRegex(ValueError, "positive 32-bit integer"):
+        with self.assertRaisesRegex(ValueError, "1 through 50"):
             parse_strategy_response(json.dumps(self.response))
+
+    def test_rejects_horizon_over_50(self):
+        self.response["horizon_ticks"] = 51
+
+        with self.assertRaisesRegex(ValueError, "1 through 50"):
+            parse_strategy_response(json.dumps(self.response))
+
+    def test_rejects_gamma_outside_open_range(self):
+        for gamma in (0.74, 0.9999999):
+            with self.subTest(gamma=gamma):
+                self.response["gamma_exploration"] = gamma
+                with self.assertRaisesRegex(ValueError, "outside its allowed range"):
+                    parse_strategy_response(json.dumps(self.response))
 
 
 if __name__ == "__main__":

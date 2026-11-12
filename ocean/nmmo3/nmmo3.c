@@ -205,7 +205,6 @@ void demo(int num_players) {
         .reward_item_level = 1.0,
         .reward_market = 0.0,
         .reward_death = -1.0,
-        .reward_exploration = 1.0,
     };
     allocate_mmo(&env);
 
@@ -260,7 +259,6 @@ void test_mmonet_performance(int num_players, int timeout) {
         .item_respawn_ticks = 200,
         .x_window = 7,
         .y_window = 5,
-        .reward_exploration = 1.0,
     };
     allocate_mmo(&env);
     c_reset(&env);
@@ -475,7 +473,6 @@ void test_performance(int num_players, int timeout) {
         .item_respawn_ticks = 200,
         .x_window = 7,
         .y_window = 5,
-        .reward_exploration = 1.0,
     };
     allocate_mmo(&env);
     c_reset(&env);
@@ -521,7 +518,6 @@ void test_no_render_log(int num_players, int target_episodes) {
         .reward_item_level = 1.0,
         .reward_market = 0.0,
         .reward_death = -1.0,
-        .reward_exploration = 1.0,
     };
     allocate_mmo(&env);
     c_reset(&env);

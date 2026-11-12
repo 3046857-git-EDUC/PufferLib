@@ -185,6 +185,18 @@ void rollouts(pybind11::object pufferl_obj) {
     }
 
     static_vec_omp_step(pufferl.vec);
+    if (pufferl.rollouts.gamma_values.data != nullptr) {
+        if (pufferl.vec->gamma_history == nullptr) {
+            throw std::runtime_error("NMMO3 gamma history was not initialized");
+        }
+        size_t gamma_bytes = (size_t)pufferl.hypers.horizon *
+            pufferl.hypers.total_agents * sizeof(float);
+        cudaError_t gamma_copy = cudaMemcpy(pufferl.rollouts.gamma_values.data,
+            pufferl.vec->gamma_history, gamma_bytes, cudaMemcpyHostToDevice);
+        if (gamma_copy != cudaSuccess) {
+            throw std::runtime_error("Failed to copy NMMO3 gamma history to the GPU");
+        }
+    }
     float sec = (float)(wall_clock() - t0);
     pufferl.profile.accum[PROF_ROLLOUT] += sec * 1000.0f;  // store as ms
 
@@ -308,6 +320,20 @@ void py_puff_advantage(
         gamma, lambda, rho_clip, c_clip, num_steps, horizon);
 }
 
+void py_puff_advantage_dynamic(
+        long long values_ptr, long long rewards_ptr,
+        long long dones_ptr, long long importance_ptr,
+        long long gamma_ptr, long long advantages_ptr,
+        int num_steps, int horizon,
+        float lambda, float rho_clip, float c_clip) {
+    int blocks = grid_size(num_steps);
+    puff_advantage_dynamic<<<blocks, 256>>>(
+        (const precision_t*)values_ptr, (const precision_t*)rewards_ptr,
+        (const precision_t*)dones_ptr, (const precision_t*)importance_ptr,
+        (const float*)gamma_ptr, (precision_t*)advantages_ptr,
+        lambda, rho_clip, c_clip, num_steps, horizon, false);
+}
+
 double get_config(py::dict& kwargs, const char* key) {
     if (!kwargs.contains(key)) {
         throw std::runtime_error(std::string("Missing config key: ") + key);
@@ -351,7 +377,17 @@ struct VecEnv {
 
 std::unique_ptr<VecEnv> create_vec(py::dict args, int gpu) {
     py::dict vec_kwargs = args["vec"].cast<py::dict>();
-    py::dict env_kwargs = args["env"].cast<py::dict>();
+    py::dict env_kwargs;
+    for (auto item : args["env"].cast<py::dict>()) {
+        env_kwargs[item.first] = item.second;
+    }
+    if (std::string(PUFFER_STRINGIFY(ENV_NAME)) == "nmmo3") {
+        if (args.contains("train") && args["train"].cast<py::dict>().contains("gamma")) {
+            env_kwargs["gamma_default"] = args["train"].cast<py::dict>()["gamma"];
+        } else {
+            env_kwargs["gamma_default"] = 0.7647543366891623;
+        }
+    }
 
     int total_agents = (int)get_config(vec_kwargs, "total_agents");
     int num_buffers  = (int)get_config(vec_kwargs, "num_buffers");
@@ -376,6 +412,12 @@ std::unique_ptr<VecEnv> create_vec(py::dict args, int gpu) {
     ve->obs_dtype     = std::string(get_obs_dtype());
     ve->obs_elem_size = get_obs_elem_size();
     return ve;
+}
+
+std::vector<float> vec_gammas(VecEnv& ve) {
+    std::vector<float> result(ve.total_agents);
+    static_vec_get_gammas(ve.vec, result.data());
+    return result;
 }
 
 void vec_reset(VecEnv& ve) {
@@ -422,7 +464,17 @@ void vec_close(VecEnv& ve) {
 std::unique_ptr<PuffeRL> create_pufferl(py::dict args) {
     py::dict train_kwargs = args["train"].cast<py::dict>();
     py::dict vec_kwargs = args["vec"].cast<py::dict>();
-    py::dict env_kwargs = args["env"].cast<py::dict>();
+    py::dict env_kwargs;
+    for (auto item : args["env"].cast<py::dict>()) {
+        env_kwargs[item.first] = item.second;
+    }
+    if (std::string(PUFFER_STRINGIFY(ENV_NAME)) == "nmmo3") {
+        if (train_kwargs.contains("gamma")) {
+            env_kwargs["gamma_default"] = train_kwargs["gamma"];
+        } else {
+            env_kwargs["gamma_default"] = 0.7647543366891623;
+        }
+    }
     py::dict policy_kwargs = args["policy"].cast<py::dict>();
 
     HypersT hypers;
@@ -628,6 +680,7 @@ PYBIND11_MODULE(_C, m) {
         return now - pufferl.start_time;
     });
     m.def("puff_advantage", &py_puff_advantage);
+    m.def("puff_advantage_dynamic", &py_puff_advantage_dynamic);
     m.def("create_vec", &create_vec, py::arg("args"), py::arg("gpu") = 1);
     py::class_<VecEnv, std::unique_ptr<VecEnv>>(m, "VecEnv")
         .def_readonly("total_agents",  &VecEnv::total_agents)
@@ -649,6 +702,7 @@ PYBIND11_MODULE(_C, m) {
         .def("reset", &vec_reset)
         .def("gpu_step", &gpu_vec_step_py)
         .def("cpu_step", &cpu_vec_step_py)
+        .def("gamma", &vec_gammas)
         .def("render", [](VecEnv& ve, int env_id) { static_vec_render(ve.vec, env_id); })
         .def("log",   &vec_log)
         .def("close", &vec_close);

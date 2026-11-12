@@ -58,12 +58,13 @@ struct RolloutBuf {
     PrecisionTensor ratio;
     PrecisionTensor importance;
     PrecisionTensor action_mask;   // (horizon, agents, mask_size); .data=nullptr when env opts out
+    FloatTensor gamma_values;      // (horizon, agents); optional dynamic NMMO gamma
 };
 
 // Buffers are initialized as raw structs with only shape information. alloc_register
 // stores the shape and data pointer. Memory is only allocated after all buffers are registered.
 void register_rollout_buffers(RolloutBuf& bufs, Allocator* alloc, int T, int B, int input_size,
-        int num_atns, int mask_size) {
+        int num_atns, int mask_size, bool dynamic_gamma) {
     bufs = (RolloutBuf){
         .observations = {.shape = {T, B, input_size}},
         .actions      = {.shape = {T, B, num_atns}},
@@ -74,6 +75,7 @@ void register_rollout_buffers(RolloutBuf& bufs, Allocator* alloc, int T, int B, 
         .ratio        = {.shape = {T, B}},
         .importance   = {.shape = {T, B}},
         .action_mask  = {},
+        .gamma_values = {},
     };
     alloc_register(alloc, &bufs.observations);
     alloc_register(alloc, &bufs.actions);
@@ -86,6 +88,10 @@ void register_rollout_buffers(RolloutBuf& bufs, Allocator* alloc, int T, int B, 
     if (mask_size > 0) {
         bufs.action_mask = {.shape = {T, B, mask_size}};
         alloc_register(alloc, &bufs.action_mask);
+    }
+    if (dynamic_gamma) {
+        bufs.gamma_values = {.shape = {T, B}};
+        alloc_register(alloc, &bufs.gamma_values);
     }
 }
 
@@ -1454,6 +1460,45 @@ __global__ void puff_advantage_scalar(const precision_t* values, const precision
         importance + offset, advantages + offset, gamma, lambda, rho_clip, c_clip, horizon);
 }
 
+__global__ void puff_advantage_dynamic(const precision_t* values,
+        const precision_t* rewards, const precision_t* dones,
+        const precision_t* importance, const float* gammas,
+        precision_t* advantages, float lambda, float rho_clip, float c_clip,
+        int num_steps, int horizon, bool gamma_time_major) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= num_steps) return;
+
+    int offset = row * horizon;
+    float lastpufferlam = 0.0f;
+    for (int t = horizon - 2; t >= 0; t--) {
+        int gamma_index = gamma_time_major
+            ? t * num_steps + row : offset + t;
+        float gamma = gammas[gamma_index];
+        float nextnonterminal = 1.0f - to_float(dones[offset + t + 1]);
+        float imp = to_float(importance[offset + t]);
+        float rho_t = fminf(imp, rho_clip);
+        float c_t = fminf(imp, c_clip);
+        float delta = rho_t * (to_float(rewards[offset + t + 1]) +
+            gamma * to_float(values[offset + t + 1]) * nextnonterminal -
+            to_float(values[offset + t]));
+        lastpufferlam = delta + gamma * lambda * c_t *
+            lastpufferlam * nextnonterminal;
+        advantages[offset + t] = from_float(lastpufferlam);
+    }
+}
+
+void puff_advantage_cuda_dynamic(PrecisionTensor& values,
+        PrecisionTensor& rewards, PrecisionTensor& dones,
+        PrecisionTensor& importance, FloatTensor& gammas,
+        PrecisionTensor& advantages, float lambda, float rho_clip,
+        float c_clip, cudaStream_t stream) {
+    int num_steps = values.shape[0], horizon = values.shape[1];
+    int blocks = grid_size(num_steps);
+    puff_advantage_dynamic<<<blocks, 256, 0, stream>>>(
+        values.data, rewards.data, dones.data, importance.data, gammas.data,
+        advantages.data, lambda, rho_clip, c_clip, num_steps, horizon, true);
+}
+
 void puff_advantage_cuda(PrecisionTensor& values, PrecisionTensor& rewards,
         PrecisionTensor& dones, PrecisionTensor& importance, PrecisionTensor& advantages,
         float gamma, float lambda, float rho_clip, float c_clip, cudaStream_t stream) {
@@ -1658,9 +1703,16 @@ void train_impl(PuffeRL& pufferl) {
         puf_zero(&advantages_puf, train_stream);
 
         profile_begin("compute_advantage", hypers.profile);
-        puff_advantage_cuda(rollouts.values, rollouts.rewards, rollouts.terminals,
-            rollouts.ratio, advantages_puf, hypers.gamma, hypers.gae_lambda,
-            hypers.vtrace_rho_clip, hypers.vtrace_c_clip, train_stream);
+        if (src.gamma_values.data != nullptr) {
+            puff_advantage_cuda_dynamic(rollouts.values, rollouts.rewards,
+                rollouts.terminals, rollouts.ratio, src.gamma_values,
+                advantages_puf, hypers.gae_lambda, hypers.vtrace_rho_clip,
+                hypers.vtrace_c_clip, train_stream);
+        } else {
+            puff_advantage_cuda(rollouts.values, rollouts.rewards, rollouts.terminals,
+                rollouts.ratio, advantages_puf, hypers.gamma, hypers.gae_lambda,
+                hypers.vtrace_rho_clip, hypers.vtrace_c_clip, train_stream);
+        }
         if (pufferl.num_frozen_banks > 0 && pufferl.bank_layout != NULL) {
             int apb = hypers.total_agents / hypers.num_buffers;
             zero_frozen_advantages_cuda(advantages_puf, apb,
@@ -2109,12 +2161,14 @@ std::unique_ptr<PuffeRL> create_pufferl_impl(HypersT& hypers,
     }
     int mask_size = pufferl->vec->action_mask_size;
     register_rollout_buffers(pufferl->rollouts,
-        acts, horizon, total_agents, input_size, num_action_heads, mask_size);
+        acts, horizon, total_agents, input_size, num_action_heads, mask_size,
+        env_name == "nmmo3");
     register_train_buffers(pufferl->train_buf,
         acts, minibatch_segments, horizon, input_size,
         hidden_size, num_action_heads, num_layers, mask_size);
     register_rollout_buffers(pufferl->train_rollouts,
-        acts, total_agents, horizon, input_size, num_action_heads, mask_size);
+        acts, total_agents, horizon, input_size, num_action_heads, mask_size,
+        false);
     register_ppo_buffers(pufferl->ppo_bufs_puf,
         acts, minibatch_segments, hypers.horizon, decoder_output_size, is_continuous);
     register_prio_buffers(pufferl->prio_bufs,

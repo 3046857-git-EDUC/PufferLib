@@ -673,19 +673,19 @@ def load_config(env_name):
     parser.add_argument('--tag', type=str, default=None, help='Tag for experiment')
     parser.add_argument('--slowly', action='store_true', help='Use PyTorch training backend')
     parser.add_argument('--ollama-strategy', action='store_true',
-        help='Use Ollama/Qwen3 to adjust NMMO3 reward weights')
+        help='Use Ollama/Qwen3 to adjust NMMO3 reward weights and gamma')
     parser.add_argument('--ollama-interval', type=int, default=720,
         help='NMMO3 ticks between shared Qwen3 reward-weight updates')
     parser.add_argument('--gemini-strategy', action='store_true',
-        help='Use Google Gemini to adjust NMMO3 reward weights')
+        help='Use Google Gemini to adjust NMMO3 reward weights and gamma')
     parser.add_argument('--gemini-interval', type=int, default=720,
         help='NMMO3 ticks between shared Gemini reward-weight updates')
     parser.add_argument('--gpt-strategy', action='store_true',
-        help='Use OpenAI GPT to adjust NMMO3 reward weights')
+        help='Use OpenAI GPT to adjust NMMO3 reward weights and gamma')
     parser.add_argument('--gpt-interval', type=int, default=720,
         help='NMMO3 ticks between shared GPT reward-weight updates')
     parser.add_argument('--openrouter-strategy', action='store_true',
-        help='Use OpenRouter Gemma to adjust NMMO3 reward weights')
+        help='Use OpenRouter Gemma to adjust NMMO3 reward weights and gamma')
     parser.add_argument('--openrouter-interval', type=int, default=720,
         help='NMMO3 ticks between shared OpenRouter reward-weight updates')
     parser.add_argument('--save-frames', type=int, default=0)

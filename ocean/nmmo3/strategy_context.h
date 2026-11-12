@@ -52,7 +52,6 @@ typedef struct {
     int inventory[INVENTORY_SIZE];
     int is_equipped[INVENTORY_SIZE];
     float reward_death;
-    float reward_pioneer;
     float reward_comb_lvl;
     float reward_prof_lvl;
     float reward_item_atk_lvl;

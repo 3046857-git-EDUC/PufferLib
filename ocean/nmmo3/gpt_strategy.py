@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn an NMMO3 strategy context into dynamic reward weights using OpenAI GPT."""
+"""Turn an NMMO3 strategy context into dynamic reward weights and gamma using OpenAI GPT."""
 
 import json
 import os

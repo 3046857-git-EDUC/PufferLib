@@ -235,7 +235,6 @@ struct Log {
     float return_market_buy;
     float return_market_sell;
     float return_death;
-    float return_pioneer;
     float min_comb_prof;
     float purchases;
     float sales;
@@ -641,7 +640,6 @@ int peek_price(ItemMarket* market) {
 typedef struct Reward Reward;
 struct Reward{
     float death;
-    float pioneer;
     float comb_lvl;
     float prof_lvl;
     float item_atk_lvl;
@@ -658,7 +656,6 @@ struct RewardWeights {
     float item_level;
     float market;
     float death;
-    float exploration;
 };
 
 typedef struct Respawnable Respawnable;
@@ -761,7 +758,8 @@ struct MMO {
     float reward_item_level;
     float reward_market;
     float reward_death;
-    float reward_exploration;
+    float gamma_default;
+    float gamma_exploration;
     RewardWeights default_reward_weights;
     int reward_weights_expire_tick;
     unsigned long long llm_cumulative_input_tokens;
@@ -795,7 +793,6 @@ void add_player_log(MMO* env, int pid) {
     log->return_market_buy += ret->market_buy;
     log->return_market_sell += ret->market_sell;
     log->return_death += ret->death;
-    log->return_pioneer += ret->pioneer;
     log->min_comb_prof += (player->prof_lvl > player->comb_lvl) ? player->comb_lvl : player->prof_lvl;
     log->purchases += player->purchases;
     log->sales += player->sales;
@@ -811,7 +808,7 @@ void add_player_log(MMO* env, int pid) {
         ret->comb_lvl + ret->prof_lvl
         + ret->item_atk_lvl + ret->item_def_lvl + ret->item_tool_lvl
         + ret->market_buy + ret->market_sell
-        + ret->death + ret->pioneer
+        + ret->death
     );
     log->episode_length += player->time_alive;
     log->score = log->min_comb_prof;
@@ -831,7 +828,6 @@ void init(MMO* env) {
         .item_level = env->reward_item_level,
         .market = env->reward_market,
         .death = env->reward_death,
-        .exploration = env->reward_exploration,
     };
     env->reward_weights_expire_tick = 0;
     env->llm_cumulative_input_tokens = 0;
@@ -1089,7 +1085,8 @@ void compute_all_obs(MMO* env) {
         // Reward observation
         Reward* reward = &env->reward_struct[pid];
         env->observations[obs_adr+47] = (reward->death == 0) ? 0 : 1;
-        env->observations[obs_adr+48] = (reward->pioneer == 0) ? 0 : 1;
+        // Keep the retired pioneer slot zeroed to preserve observation shape.
+        env->observations[obs_adr+48] = 0;
         env->observations[obs_adr+49] = reward->comb_lvl / 20;
         env->observations[obs_adr+50] = reward->prof_lvl / 20;
         env->observations[obs_adr+51] = reward->item_atk_lvl / 20;
@@ -1322,8 +1319,6 @@ void move(MMO* env, int pid, int direction, bool run) {
     // Update visitation map. Skips run tiles
     if (entity->type == ENTITY_PLAYER) {
         if (env->counts[map_offset(env, rr, cc)] == 0) {
-            env->reward_struct[pid].pioneer = env->reward_exploration;
-            env->returns[pid].pioneer += env->reward_exploration;
         }
         if (env->counts[map_offset(env, rr, cc)] < 255) {
             env->counts[map_offset(env, rr, cc)] += 1;
@@ -2261,7 +2256,6 @@ void c_step(MMO* env) {
             reward->death + reward->comb_lvl
             + reward->prof_lvl + reward->item_atk_lvl + reward->item_def_lvl
             + reward->item_tool_lvl + reward->market_buy + reward->market_sell
-            + reward->pioneer
         );
     }
 }

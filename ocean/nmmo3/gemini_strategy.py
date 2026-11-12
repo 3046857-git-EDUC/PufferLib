@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn an NMMO3 strategy context into dynamic reward weights using Google Gemini."""
+"""Turn an NMMO3 strategy context into dynamic reward weights and gamma using Google Gemini."""
 
 import json
 import os

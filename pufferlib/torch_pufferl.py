@@ -155,6 +155,10 @@ class PuffeRL:
         self.logprobs = torch.zeros(horizon, total_agents, device=device)
         self.rewards = torch.zeros(horizon, total_agents, device=device)
         self.terminals = torch.zeros(horizon, total_agents, device=device)
+        self.gamma_values = None
+        if getattr(_C, 'env_name', None) == 'nmmo3':
+            self.gamma_values = torch.full(
+                (horizon, total_agents), config['gamma'], device=device)
         self.ratio = torch.ones(total_agents, horizon, device=device)
         self.state = policy.initial_state(total_agents, device=device)
 
@@ -240,6 +244,10 @@ class PuffeRL:
             else:
                 self._vec.cpu_step(actions_flat.data_ptr())
 
+            if self.gamma_values is not None:
+                self.gamma_values[t] = torch.as_tensor(
+                    self._vec.gamma(), device=device)
+
             o, r, d = self.vec_obs, self.vec_rewards, self.vec_terminals
             prof.mark(3)
             prof.elapsed(P.EVAL_GPU, 1, 2)
@@ -277,6 +285,8 @@ class PuffeRL:
         lp = self.logprobs.T.contiguous()
         rew = self.rewards.T.contiguous().clamp(-1, 1)
         ter = self.terminals.T.contiguous()
+        gamma = (self.gamma_values.T.contiguous()
+            if self.gamma_values is not None else config['gamma'])
 
         P = Profile
         prof.mark(0)
@@ -285,7 +295,7 @@ class PuffeRL:
             shape = val.shape
             advantages = torch.zeros(shape, device=device)
             advantages = compute_puff_advantage(val, rew,
-                ter, self.ratio, advantages, config['gamma'],
+                ter, self.ratio, advantages, gamma,
                 config['gae_lambda'], config['vtrace_rho_clip'], config['vtrace_c_clip'])
 
             adv = advantages.abs().sum(axis=1)
@@ -434,12 +444,26 @@ class PuffeRL:
 def compute_puff_advantage(values, rewards, terminals,
         ratio, advantages, gamma, gae_lambda, vtrace_rho_clip, vtrace_c_clip):
     num_steps, horizon = values.shape
-    fn = _C.puff_advantage if values.is_cuda else _C.puff_advantage_cpu
-    fn(
+    dynamic_gamma = isinstance(gamma, torch.Tensor)
+    if dynamic_gamma:
+        gamma = gamma.contiguous()
+        fn = (_C.puff_advantage_dynamic if values.is_cuda
+            else _C.puff_advantage_cpu_dynamic)
+    else:
+        fn = _C.puff_advantage if values.is_cuda else _C.puff_advantage_cpu
+    args = [
         values.data_ptr(), rewards.data_ptr(), terminals.data_ptr(),
-        ratio.data_ptr(), advantages.data_ptr(),
-        num_steps, horizon,
-        gamma, gae_lambda, vtrace_rho_clip, vtrace_c_clip)
+        ratio.data_ptr(),
+    ]
+    if dynamic_gamma:
+        args.append(gamma.data_ptr())
+    args.append(advantages.data_ptr())
+    args.extend([num_steps, horizon])
+    if not dynamic_gamma:
+        args.append(gamma)
+    args.extend([gae_lambda, vtrace_rho_clip, vtrace_c_clip])
+    fn(
+        *args)
     return advantages
 
 class Profile:
@@ -513,4 +537,3 @@ def load_policy(args, vec):
         policy.load_state_dict(state_dict)
 
     return policy
-

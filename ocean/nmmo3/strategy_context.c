@@ -10,6 +10,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#define MAX_STRATEGY_HORIZON_TICKS 50
+
 static int abs_int(int value) {
     return value < 0 ? -value : value;
 }
@@ -78,7 +80,7 @@ int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
     memcpy(context->equipment, self->equipment, sizeof(context->equipment));
     memcpy(context->inventory, self->inventory, sizeof(context->inventory));
     memcpy(context->is_equipped, self->is_equipped, sizeof(context->is_equipped));
-    context->reward_death = reward->death; context->reward_pioneer = reward->pioneer;
+    context->reward_death = reward->death;
     context->reward_comb_lvl = reward->comb_lvl; context->reward_prof_lvl = reward->prof_lvl;
     context->reward_item_atk_lvl = reward->item_atk_lvl;
     context->reward_item_def_lvl = reward->item_def_lvl;
@@ -159,20 +161,20 @@ int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
     offset = append_text(context->text, offset, "INVENTORY items=");
     for (int i = 0; i < INVENTORY_SIZE; i++) offset = append_text(context->text, offset, "%d%s", context->inventory[i], i == INVENTORY_SIZE - 1 ? "\n" : ",");
     offset = append_text(context->text, offset,
-        "\nPROGRESSION\nreward_death=%.2f\nreward_pioneer=%.2f\nreward_combat=%.2f\n"
+        "\nPROGRESSION\nreward_death=%.2f\nreward_combat=%.2f\n"
         "reward_profession=%.2f\nreward_item_attack=%.2f\nreward_item_defense=%.2f\n"
         "reward_item_tool=%.2f\nreward_market_buy=%.2f\nreward_market_sell=%.2f\n",
-        context->reward_death, context->reward_pioneer, context->reward_comb_lvl,
+        context->reward_death, context->reward_comb_lvl,
         context->reward_prof_lvl, context->reward_item_atk_lvl, context->reward_item_def_lvl,
         context->reward_item_tool_lvl, context->reward_market_buy, context->reward_market_sell);
     offset = append_text(context->text, offset,
         "\nREWARD_WEIGHTS_CURRENT\n"
         "reward_combat_level=%.2f\nreward_prof_level=%.2f\n"
         "reward_item_level=%.2f\nreward_market=%.2f\n"
-        "reward_death=%.2f\nreward_exploration=%.2f\n"
+        "reward_death=%.2f\ngamma_exploration=%.7f\n"
         "ticks_until_default=%d\n",
         env->reward_combat_level, env->reward_prof_level, env->reward_item_level,
-        env->reward_market, env->reward_death, env->reward_exploration,
+        env->reward_market, env->reward_death, env->gamma_exploration,
         env->reward_weights_expire_tick > env->tick
             ? env->reward_weights_expire_tick - env->tick : 0);
 
@@ -270,8 +272,7 @@ static int valid_reward_weights(const RewardWeights* weights) {
         weights->prof_level >= 0.0f && weights->prof_level <= 1.0f &&
         weights->item_level >= 0.0f && weights->item_level <= 1.0f &&
         weights->market >= 0.0f && weights->market <= 1.0f &&
-        weights->death >= -1.0f && weights->death <= 0.0f &&
-        weights->exploration >= 0.0f && weights->exploration <= 1.0f;
+        weights->death >= -1.0f && weights->death <= 0.0f;
 }
 
 int nmmo3_strategy_step(MMO* env, int pid) {
@@ -294,11 +295,14 @@ int nmmo3_strategy_step(MMO* env, int pid) {
             if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
                 int input_tokens, output_tokens;
                 int horizon_ticks;
+                float gamma_exploration;
                 RewardWeights weights;
                 const char* weights_field = strstr(
                     env->strategy_response, "\"reward_weights\"");
                 const char* weights_object = weights_field != NULL
                     ? strchr(weights_field, '{') : NULL;
+                const char* gamma_field = strstr(
+                    env->strategy_response, "\"gamma_exploration\"");
                 if (parse_token_count(env->strategy_response, "llm_input_tokens", &input_tokens) &&
                     parse_token_count(env->strategy_response, "llm_output_tokens", &output_tokens)) {
                     env->log.llm_input_tokens = (float)input_tokens;
@@ -318,16 +322,19 @@ int nmmo3_strategy_step(MMO* env, int pid) {
                     parse_float_field(weights_object, "reward_item_level", &weights.item_level) &&
                     parse_float_field(weights_object, "reward_market", &weights.market) &&
                     parse_float_field(weights_object, "reward_death", &weights.death) &&
-                    parse_float_field(weights_object, "reward_exploration", &weights.exploration) &&
                     valid_reward_weights(&weights) &&
+                    gamma_field != NULL &&
+                    parse_float_field(gamma_field, "gamma_exploration", &gamma_exploration) &&
+                    gamma_exploration > 0.74f && gamma_exploration < 0.9999999f &&
                     parse_positive_int(env->strategy_response, "horizon_ticks", &horizon_ticks) &&
+                    horizon_ticks <= MAX_STRATEGY_HORIZON_TICKS &&
                     horizon_ticks <= INT_MAX - env->tick) {
                     env->reward_combat_level = weights.combat_level;
                     env->reward_prof_level = weights.prof_level;
                     env->reward_item_level = weights.item_level;
                     env->reward_market = weights.market;
                     env->reward_death = weights.death;
-                    env->reward_exploration = weights.exploration;
+                    env->gamma_exploration = gamma_exploration;
                     env->reward_weights_expire_tick = env->tick + horizon_ticks;
                     env->log.strategy_updates += 1;
                     const char* backend = getenv("NMMO3_STRATEGY_BACKEND");
@@ -394,7 +401,7 @@ void nmmo3_restore_default_reward_weights(MMO* env) {
     env->reward_item_level = env->default_reward_weights.item_level;
     env->reward_market = env->default_reward_weights.market;
     env->reward_death = env->default_reward_weights.death;
-    env->reward_exploration = env->default_reward_weights.exploration;
+    env->gamma_exploration = env->gamma_default;
     env->reward_weights_expire_tick = 0;
 }
 

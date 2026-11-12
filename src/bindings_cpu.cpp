@@ -66,6 +66,38 @@ static void py_puff_advantage_cpu(
     }
 }
 
+static void py_puff_advantage_cpu_dynamic(
+        long long values_ptr, long long rewards_ptr,
+        long long dones_ptr, long long importance_ptr,
+        long long gamma_ptr, long long advantages_ptr,
+        int num_steps, int horizon,
+        float lambda, float rho_clip, float c_clip) {
+    const float* values = (const float*)values_ptr;
+    const float* rewards = (const float*)rewards_ptr;
+    const float* dones = (const float*)dones_ptr;
+    const float* importance = (const float*)importance_ptr;
+    const float* gammas = (const float*)gamma_ptr;
+    float* advantages = (float*)advantages_ptr;
+    for (int row = 0; row < num_steps; row++) {
+        int off = row * horizon;
+        float lastpufferlam = 0;
+        for (int t = horizon - 2; t >= 0; t--) {
+            int t_next = t + 1;
+            float nextnonterminal = 1.0f - dones[off + t_next];
+            float gamma = gammas[off + t];
+            float imp = importance[off + t];
+            float rho_t = imp < rho_clip ? imp : rho_clip;
+            float c_t = imp < c_clip ? imp : c_clip;
+            float r_nxt = rewards[off + t_next];
+            float v = values[off + t];
+            float v_nxt = values[off + t_next];
+            float delta = rho_t * r_nxt + gamma * v_nxt * nextnonterminal - v;
+            lastpufferlam = delta + gamma * lambda * c_t * lastpufferlam * nextnonterminal;
+            advantages[off + t] = lastpufferlam;
+        }
+    }
+}
+
 // ============================================================================
 // Dict helpers (same as bindings.cu)
 // ============================================================================
@@ -103,7 +135,17 @@ struct VecEnv {
 static std::unique_ptr<VecEnv> create_vec(py::dict args, int gpu = 0) {
     (void)gpu;
     py::dict vec_kwargs = args["vec"].cast<py::dict>();
-    py::dict env_kwargs = args["env"].cast<py::dict>();
+    py::dict env_kwargs;
+    for (auto item : args["env"].cast<py::dict>()) {
+        env_kwargs[item.first] = item.second;
+    }
+    if (std::string(PUFFER_STRINGIFY(ENV_NAME)) == "nmmo3") {
+        if (args.contains("train") && args["train"].cast<py::dict>().contains("gamma")) {
+            env_kwargs["gamma_default"] = args["train"].cast<py::dict>()["gamma"];
+        } else {
+            env_kwargs["gamma_default"] = 0.7647543366891623;
+        }
+    }
     int total_agents = (int)get_config(vec_kwargs, "total_agents");
     int num_buffers = (int)get_config(vec_kwargs, "num_buffers");
     Dict* vec_dict = py_dict_to_c_dict(vec_kwargs);
@@ -152,6 +194,12 @@ static py::dict vec_log(VecEnv& ve) {
     return result;
 }
 
+static std::vector<float> vec_gammas(VecEnv& ve) {
+    std::vector<float> result(ve.total_agents);
+    static_vec_get_gammas(ve.vec, result.data());
+    return result;
+}
+
 static void vec_close(VecEnv& ve) {
     static_vec_close(ve.vec);
     ve.vec = nullptr;
@@ -167,6 +215,7 @@ PYBIND11_MODULE(_C, m) {
     m.attr("gpu") = 0;
 
     m.def("puff_advantage_cpu", &py_puff_advantage_cpu);
+    m.def("puff_advantage_cpu_dynamic", &py_puff_advantage_cpu_dynamic);
     m.def("create_vec", &create_vec, py::arg("args"), py::arg("gpu") = 0);
 
     py::class_<VecEnv, std::unique_ptr<VecEnv>>(m, "VecEnv")
@@ -183,6 +232,7 @@ PYBIND11_MODULE(_C, m) {
         .def_property_readonly("actions_ptr", [](VecEnv& ve) { return (long long)ve.vec->actions; })
         .def("reset", &vec_reset)
         .def("cpu_step", &cpu_vec_step_py)
+        .def("gamma", &vec_gammas)
         .def("render", [](VecEnv& ve, int env_id) { static_vec_render(ve.vec, env_id); })
         .def("log", &vec_log)
         .def("close", &vec_close);
