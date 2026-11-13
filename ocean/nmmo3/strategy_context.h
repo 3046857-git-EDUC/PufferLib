@@ -59,6 +59,10 @@ typedef struct {
     float reward_item_tool_lvl;
     float reward_market_buy;
     float reward_market_sell;
+    Reward interval_returns;
+    Reward previous_interval_returns;
+    unsigned long long interval_ticks;
+    unsigned long long previous_interval_ticks;
     int num_players;
     int num_enemies;
     StrategyEntity players[STRATEGY_CONTEXT_MAX_ENTITIES];

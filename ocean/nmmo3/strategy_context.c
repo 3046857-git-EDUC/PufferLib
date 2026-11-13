@@ -62,6 +62,8 @@ int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
     int group_comb = 0, group_prof = 0, group_hp = 0, group_hp_max = 0, group_gold = 0;
     Entity* self;
     Reward* reward;
+    Reward interval_return_rates = {0};
+    Reward previous_interval_return_rates = {0};
 
     if (env == NULL || context == NULL || pid < 0 || pid >= env->num_agents ||
         env->players == NULL || env->items == NULL || env->reward_struct == NULL) return -1;
@@ -86,6 +88,32 @@ int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
     context->reward_item_def_lvl = reward->item_def_lvl;
     context->reward_item_tool_lvl = reward->item_tool_lvl;
     context->reward_market_buy = reward->market_buy; context->reward_market_sell = reward->market_sell;
+    context->interval_returns = env->strategy_interval_returns;
+    context->previous_interval_returns = env->strategy_previous_returns;
+    context->interval_ticks = env->strategy_interval_ticks;
+    context->previous_interval_ticks = env->strategy_previous_ticks;
+    if (context->interval_ticks > 0) {
+        float scale = 1.0f / (float)context->interval_ticks;
+        interval_return_rates.comb_lvl = context->interval_returns.comb_lvl * scale;
+        interval_return_rates.prof_lvl = context->interval_returns.prof_lvl * scale;
+        interval_return_rates.item_atk_lvl = context->interval_returns.item_atk_lvl * scale;
+        interval_return_rates.item_def_lvl = context->interval_returns.item_def_lvl * scale;
+        interval_return_rates.item_tool_lvl = context->interval_returns.item_tool_lvl * scale;
+        interval_return_rates.market_buy = context->interval_returns.market_buy * scale;
+        interval_return_rates.market_sell = context->interval_returns.market_sell * scale;
+        interval_return_rates.death = context->interval_returns.death * scale;
+    }
+    if (context->previous_interval_ticks > 0) {
+        float scale = 1.0f / (float)context->previous_interval_ticks;
+        previous_interval_return_rates.comb_lvl = context->previous_interval_returns.comb_lvl * scale;
+        previous_interval_return_rates.prof_lvl = context->previous_interval_returns.prof_lvl * scale;
+        previous_interval_return_rates.item_atk_lvl = context->previous_interval_returns.item_atk_lvl * scale;
+        previous_interval_return_rates.item_def_lvl = context->previous_interval_returns.item_def_lvl * scale;
+        previous_interval_return_rates.item_tool_lvl = context->previous_interval_returns.item_tool_lvl * scale;
+        previous_interval_return_rates.market_buy = context->previous_interval_returns.market_buy * scale;
+        previous_interval_return_rates.market_sell = context->previous_interval_returns.market_sell * scale;
+        previous_interval_return_rates.death = context->previous_interval_returns.death * scale;
+    }
     for (int i = 0; i < env->num_agents && context->num_players < STRATEGY_CONTEXT_MAX_ENTITIES; i++)
         if (i != pid && is_local(env, self, &env->players[i]))
             fill_entity(&context->players[context->num_players++], &env->players[i], self, i);
@@ -156,6 +184,7 @@ int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
         context->self_in_combat, context->self_equipment_attack,
         context->self_equipment_defense, context->self_wander_range,
         context->self_ranged, context->self_goal);
+    offset = append_text(context->text, offset, "SCORE value=%.2f\n", env->log.score);
     offset = append_text(context->text, offset, "EQUIPMENT slots=");
     for (int i = 0; i < 5; i++) offset = append_text(context->text, offset, "%d%s", context->equipment[i], i == 4 ? "\n" : ",");
     offset = append_text(context->text, offset, "INVENTORY items=");
@@ -167,6 +196,57 @@ int build_strategy_context(MMO* env, int pid, StrategyContext* context) {
         context->reward_death, context->reward_comb_lvl,
         context->reward_prof_lvl, context->reward_item_atk_lvl, context->reward_item_def_lvl,
         context->reward_item_tool_lvl, context->reward_market_buy, context->reward_market_sell);
+    offset = append_text(context->text, offset,
+        "\nRETURN_TRENDS scope=GROUP current_ticks=%llu previous_ticks=%llu\n"
+        "current return_comb_lvl=%.2f return_prof_lvl=%.2f "
+        "return_item_atk_lvl=%.2f return_item_def_lvl=%.2f "
+        "return_item_tool_lvl=%.2f return_market_buy=%.2f "
+        "return_market_sell=%.2f return_death=%.2f\n"
+        "previous return_comb_lvl=%.2f return_prof_lvl=%.2f "
+        "return_item_atk_lvl=%.2f return_item_def_lvl=%.2f "
+        "return_item_tool_lvl=%.2f return_market_buy=%.2f "
+        "return_market_sell=%.2f return_death=%.2f\n"
+        "current_per_tick return_comb_lvl=%.5f return_prof_lvl=%.5f "
+        "return_item_atk_lvl=%.5f return_item_def_lvl=%.5f "
+        "return_item_tool_lvl=%.5f return_market_buy=%.5f "
+        "return_market_sell=%.5f return_death=%.5f\n"
+        "previous_per_tick return_comb_lvl=%.5f return_prof_lvl=%.5f "
+        "return_item_atk_lvl=%.5f return_item_def_lvl=%.5f "
+        "return_item_tool_lvl=%.5f return_market_buy=%.5f "
+        "return_market_sell=%.5f return_death=%.5f\n"
+        "change_per_tick return_comb_lvl=%.5f return_prof_lvl=%.5f "
+        "return_item_atk_lvl=%.5f return_item_def_lvl=%.5f "
+        "return_item_tool_lvl=%.5f return_market_buy=%.5f "
+        "return_market_sell=%.5f return_death=%.5f\n",
+        context->interval_ticks, context->previous_interval_ticks,
+        context->interval_returns.comb_lvl, context->interval_returns.prof_lvl,
+        context->interval_returns.item_atk_lvl, context->interval_returns.item_def_lvl,
+        context->interval_returns.item_tool_lvl, context->interval_returns.market_buy,
+        context->interval_returns.market_sell, context->interval_returns.death,
+        context->previous_interval_returns.comb_lvl,
+        context->previous_interval_returns.prof_lvl,
+        context->previous_interval_returns.item_atk_lvl,
+        context->previous_interval_returns.item_def_lvl,
+        context->previous_interval_returns.item_tool_lvl,
+        context->previous_interval_returns.market_buy,
+        context->previous_interval_returns.market_sell,
+        context->previous_interval_returns.death,
+        interval_return_rates.comb_lvl, interval_return_rates.prof_lvl,
+        interval_return_rates.item_atk_lvl, interval_return_rates.item_def_lvl,
+        interval_return_rates.item_tool_lvl, interval_return_rates.market_buy,
+        interval_return_rates.market_sell, interval_return_rates.death,
+        previous_interval_return_rates.comb_lvl, previous_interval_return_rates.prof_lvl,
+        previous_interval_return_rates.item_atk_lvl, previous_interval_return_rates.item_def_lvl,
+        previous_interval_return_rates.item_tool_lvl, previous_interval_return_rates.market_buy,
+        previous_interval_return_rates.market_sell, previous_interval_return_rates.death,
+        interval_return_rates.comb_lvl - previous_interval_return_rates.comb_lvl,
+        interval_return_rates.prof_lvl - previous_interval_return_rates.prof_lvl,
+        interval_return_rates.item_atk_lvl - previous_interval_return_rates.item_atk_lvl,
+        interval_return_rates.item_def_lvl - previous_interval_return_rates.item_def_lvl,
+        interval_return_rates.item_tool_lvl - previous_interval_return_rates.item_tool_lvl,
+        interval_return_rates.market_buy - previous_interval_return_rates.market_buy,
+        interval_return_rates.market_sell - previous_interval_return_rates.market_sell,
+        interval_return_rates.death - previous_interval_return_rates.death);
     offset = append_text(context->text, offset,
         "\nREWARD_WEIGHTS_CURRENT\n"
         "reward_combat_level=%.2f\nreward_prof_level=%.2f\n"
@@ -387,6 +467,10 @@ int nmmo3_strategy_step(MMO* env, int pid) {
     close(output_pipe[1]);
     (void)write(input_pipe[1], context.text, strlen(context.text));
     close(input_pipe[1]);
+    env->strategy_previous_returns = env->strategy_interval_returns;
+    env->strategy_previous_ticks = env->strategy_interval_ticks;
+    env->strategy_interval_returns = (Reward){0};
+    env->strategy_interval_ticks = 0;
     (void)fcntl(output_pipe[0], F_SETFL, fcntl(output_pipe[0], F_GETFL) | O_NONBLOCK);
     env->strategy_pid = child;
     strategy_active_env = env;

@@ -26,7 +26,13 @@ Return ONLY valid JSON with exactly the structure below. Do not include explanat
 - The configured default gamma is 0.7647543366891623. Use gamma_exploration above it when exploration through longer-horizon credit assignment is useful, and lower values when it is not.
 - When horizon_ticks expires, all reward coefficients and gamma return to their configured defaults.
 - Keep coefficients moderate and preserve a non-positive death penalty.
-- Use lower coefficients to deprioritize a component and higher coefficients to emphasize it.
+- Use SCORE together with RETURN_TRENDS to judge outcomes; do not assume higher coefficients are always better.
+- Compare current and previous interval returns for return_comb_lvl, return_prof_lvl, return_item_atk_lvl, return_item_def_lvl, return_item_tool_lvl, return_market_buy, and return_market_sell. Prefer sustained improvements across components over maximizing one component at the expense of the others.
+- A positive trend means increasing returns for those seven components. For return_death, which is non-positive, prefer a trend toward zero or fewer penalties.
+- RETURN_TRENDS includes interval totals, per-tick rates, and rate changes. Compare per-tick rates when interval lengths differ. When previous_ticks is zero, there is no prior interval for comparison; use the current returns and score as a baseline.
+- Coefficients directly scale returns, so a larger return alone does not prove better underlying performance. Use SCORE, the per-component trends, current weights, and context together.
+- Returns can be sparse or noisy. Do not overreact to a single interval; prefer sustained improvements across intervals.
+- The configured default reward weights are reward_combat_level=1.0, reward_prof_level=1.0, reward_item_level=1.0, reward_market=0.0, and reward_death=-1.0. Sweep means are reward_combat_level=0.5, reward_prof_level=0.5, reward_item_level=1.0, and reward_death=-1.0; reward_market is fixed at 0.0.
 
 {
   "reward_weights": {

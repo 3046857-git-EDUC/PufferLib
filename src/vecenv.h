@@ -677,9 +677,78 @@ void static_vec_close(StaticVec* vec) {
     free(vec);
 }
 
-static inline float static_vec_aggregate_logs(StaticVec* vec, Log* out) {
+#ifdef MY_LOG_SUM_FIELDS
+static inline void static_vec_add_log_sum_fields(Log* sum, const Log* log) {
+#define ADD_LOG_SUM_FIELD(field) sum->field += log->field;
+    MY_LOG_SUM_FIELDS(ADD_LOG_SUM_FIELD)
+#undef ADD_LOG_SUM_FIELD
+}
+
+static inline void static_vec_copy_log_sum_fields(Log* dst, const Log* src) {
+#define COPY_LOG_SUM_FIELD(field) dst->field = src->field;
+    MY_LOG_SUM_FIELDS(COPY_LOG_SUM_FIELD)
+#undef COPY_LOG_SUM_FIELD
+}
+
+static inline int static_vec_has_log_sum_fields(const Log* log) {
+    int has_fields = 0;
+#define CHECK_LOG_SUM_FIELD(field) has_fields |= log->field != 0;
+    MY_LOG_SUM_FIELDS(CHECK_LOG_SUM_FIELD)
+#undef CHECK_LOG_SUM_FIELD
+    return has_fields;
+}
+
+static inline void static_vec_write_log_sum_fields(const Log* log, Dict* out) {
+#define WRITE_LOG_SUM_FIELD(field) dict_set(out, #field, log->field);
+    MY_LOG_SUM_FIELDS(WRITE_LOG_SUM_FIELD)
+#undef WRITE_LOG_SUM_FIELD
+}
+
+static inline void static_vec_clear_log_sum_fields(Log* log) {
+#define CLEAR_LOG_SUM_FIELD(field) log->field = 0;
+    MY_LOG_SUM_FIELDS(CLEAR_LOG_SUM_FIELD)
+#undef CLEAR_LOG_SUM_FIELD
+}
+#endif
+
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+static inline void static_vec_add_cumulative_fields(
+        TradeSuccessTotals* total, const TradeSuccessTotals* env_total) {
+#define ADD_CUMULATIVE_FIELD(field) total->field += env_total->field;
+    MY_LOG_CUMULATIVE_FIELDS(ADD_CUMULATIVE_FIELD)
+#undef ADD_CUMULATIVE_FIELD
+}
+
+static inline int static_vec_has_cumulative_fields(const TradeSuccessTotals* total) {
+    int has_fields = 0;
+#define CHECK_CUMULATIVE_FIELD(field) has_fields |= total->field != 0;
+    MY_LOG_CUMULATIVE_FIELDS(CHECK_CUMULATIVE_FIELD)
+#undef CHECK_CUMULATIVE_FIELD
+    return has_fields;
+}
+
+static inline void static_vec_write_cumulative_fields(
+        const TradeSuccessTotals* total, Dict* out) {
+#define WRITE_CUMULATIVE_FIELD(field) dict_set(out, #field, (double)total->field);
+    MY_LOG_CUMULATIVE_FIELDS(WRITE_CUMULATIVE_FIELD)
+#undef WRITE_CUMULATIVE_FIELD
+}
+#endif
+
+static inline float static_vec_aggregate_logs(
+        StaticVec* vec, Log* out
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+        , TradeSuccessTotals* cumulative_total
+#endif
+        ) {
     Env* envs = (Env*)vec->envs;
     memset(out, 0, sizeof(Log));
+#ifdef MY_LOG_SUM_FIELDS
+    Log sum_fields = {0};
+#endif
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+    *cumulative_total = (TradeSuccessTotals){0};
+#endif
     int num_keys = sizeof(Log) / sizeof(float);
 #ifdef MY_LOG_LLM_TOKENS
     float llm_input_tokens = 0;
@@ -695,6 +764,12 @@ static inline float static_vec_aggregate_logs(StaticVec* vec, Log* out) {
         llm_cumulative_input_tokens += env->log.llm_cumulative_input_tokens;
         llm_cumulative_output_tokens += env->log.llm_cumulative_output_tokens;
 #endif
+#ifdef MY_LOG_SUM_FIELDS
+        static_vec_add_log_sum_fields(&sum_fields, &env->log);
+#endif
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+        static_vec_add_cumulative_fields(cumulative_total, &env->trade_success_totals);
+#endif
         if (env->log.n == 0) {
             continue;
         }
@@ -703,18 +778,14 @@ static inline float static_vec_aggregate_logs(StaticVec* vec, Log* out) {
         }
     }
     float n = out->n;
-    if (n == 0.0f) {
-#ifdef MY_LOG_LLM_TOKENS
-        out->llm_input_tokens = llm_input_tokens;
-        out->llm_output_tokens = llm_output_tokens;
-        out->llm_cumulative_input_tokens = llm_cumulative_input_tokens;
-        out->llm_cumulative_output_tokens = llm_cumulative_output_tokens;
+    if (n != 0.0f) {
+        for (int i = 0; i < num_keys; i++) {
+            ((float*)out)[i] /= n;
+        }
+    }
+#ifdef MY_LOG_SUM_FIELDS
+    static_vec_copy_log_sum_fields(out, &sum_fields);
 #endif
-        return 0;
-    }
-    for (int i = 0; i < num_keys; i++) {
-        ((float*)out)[i] /= n;
-    }
 #ifdef MY_LOG_LLM_TOKENS
     out->llm_input_tokens = llm_input_tokens;
     out->llm_output_tokens = llm_output_tokens;
@@ -788,14 +859,47 @@ static inline void static_vec_log_llm_tokens(const Log* log, Dict* out) {
 void static_vec_log(StaticVec* vec, Dict* out) {
     Env* envs = (Env*)vec->envs;
     Log aggregate;
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+    TradeSuccessTotals cumulative_total;
+    float n = static_vec_aggregate_logs(vec, &aggregate, &cumulative_total);
+#else
     float n = static_vec_aggregate_logs(vec, &aggregate);
+#endif
 #ifdef MY_LOG_LLM_TOKENS
     if (n == 0 && !static_vec_has_llm_tokens(&aggregate)) {
+#ifdef MY_LOG_SUM_FIELDS
+        if (!static_vec_has_log_sum_fields(&aggregate)) {
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+            if (!static_vec_has_cumulative_fields(&cumulative_total)) return;
+#else
+            return;
+#endif
+        }
+#else
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+        if (!static_vec_has_cumulative_fields(&cumulative_total)) return;
+#else
         return;
+#endif
+#endif
     }
 #else
     if (n == 0) {
+#ifdef MY_LOG_SUM_FIELDS
+        if (!static_vec_has_log_sum_fields(&aggregate)) {
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+            if (!static_vec_has_cumulative_fields(&cumulative_total)) return;
+#else
+            return;
+#endif
+        }
+#else
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+        if (!static_vec_has_cumulative_fields(&cumulative_total)) return;
+#else
         return;
+#endif
+#endif
     }
 #endif
     if (n != 0) {
@@ -803,6 +907,9 @@ void static_vec_log(StaticVec* vec, Dict* out) {
             memset(&envs[i].log, 0, sizeof(Log));
         }
         my_log(&aggregate, out);
+#ifdef MY_LOG_SUM_FIELDS
+        static_vec_write_log_sum_fields(&aggregate, out);
+#endif
         dict_set(out, "n", n);
     }
 #ifdef MY_LOG_LLM_TOKENS
@@ -814,22 +921,69 @@ void static_vec_log(StaticVec* vec, Dict* out) {
         envs[i].log.llm_output_tokens = 0.0f;
     }
 #endif
+#ifdef MY_LOG_SUM_FIELDS
+    if (n == 0) {
+        static_vec_write_log_sum_fields(&aggregate, out);
+        for (int i = 0; i < vec->size; i++) {
+            static_vec_clear_log_sum_fields(&envs[i].log);
+        }
+    }
+#endif
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+    static_vec_write_cumulative_fields(&cumulative_total, out);
+#endif
 }
 
 void static_vec_eval_log(StaticVec* vec, Dict* out) {
     Log aggregate;
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+    TradeSuccessTotals cumulative_total;
+    float n = static_vec_aggregate_logs(vec, &aggregate, &cumulative_total);
+#else
     float n = static_vec_aggregate_logs(vec, &aggregate);
+#endif
 #ifdef MY_LOG_LLM_TOKENS
     if (n == 0 && !static_vec_has_llm_tokens(&aggregate)) {
+#ifdef MY_LOG_SUM_FIELDS
+        if (!static_vec_has_log_sum_fields(&aggregate)) {
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+            if (!static_vec_has_cumulative_fields(&cumulative_total)) return;
+#else
+            return;
+#endif
+        }
+#else
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+        if (!static_vec_has_cumulative_fields(&cumulative_total)) return;
+#else
         return;
+#endif
+#endif
     }
 #else
     if (n == 0) {
-        return;
+#ifdef MY_LOG_SUM_FIELDS
+        if (!static_vec_has_log_sum_fields(&aggregate)) {
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+            if (!static_vec_has_cumulative_fields(&cumulative_total)) return;
+#else
+            return;
+#endif
+        }
+#else
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+        if (!static_vec_has_cumulative_fields(&cumulative_total)) return;
+#else
+            return;
+#endif
+#endif
     }
 #endif
     if (n != 0) {
         my_log(&aggregate, out);
+#ifdef MY_LOG_SUM_FIELDS
+        static_vec_write_log_sum_fields(&aggregate, out);
+#endif
         dict_set(out, "n", n);
     }
 #ifdef MY_LOG_LLM_TOKENS
@@ -841,6 +995,14 @@ void static_vec_eval_log(StaticVec* vec, Dict* out) {
         envs[i].log.llm_input_tokens = 0.0f;
         envs[i].log.llm_output_tokens = 0.0f;
     }
+#endif
+#ifdef MY_LOG_SUM_FIELDS
+    if (n == 0) {
+        static_vec_write_log_sum_fields(&aggregate, out);
+    }
+#endif
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+    static_vec_write_cumulative_fields(&cumulative_total, out);
 #endif
 }
 

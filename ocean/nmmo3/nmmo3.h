@@ -240,8 +240,10 @@ struct Log {
     float sales;
     float trade_buy_attempts;
     float trade_buy_successes;
+    float trade_buy_failures;
     float trade_sell_attempts;
     float trade_sell_successes;
+    float trade_sell_failures;
     float equip_attack;
     float equip_defense;
     float r;
@@ -256,6 +258,18 @@ struct Log {
     float comb_lvl;
     float prof_lvl;
 };
+
+#define MY_LOG_SUM_FIELDS(X) \
+    X(trade_buy_attempts) \
+    X(trade_buy_successes) \
+    X(trade_buy_failures) \
+    X(trade_sell_attempts) \
+    X(trade_sell_successes) \
+    X(trade_sell_failures)
+
+#define MY_LOG_CUMULATIVE_FIELDS(X) \
+    X(trade_buy_successes_cumulative) \
+    X(trade_sell_successes_cumulative)
  
 // TODO: This is actually simplex and we should probably use the original impl
 // ALSO: Not seeded correctly
@@ -542,6 +556,20 @@ void generate_terrain(char* terrain, unsigned char* rendered,
     free(biomes);
 }
 
+typedef struct {
+    float trade_buy_attempts;
+    float trade_buy_successes;
+    float trade_buy_failures;
+    float trade_sell_attempts;
+    float trade_sell_successes;
+    float trade_sell_failures;
+} TradeCounters;
+
+typedef struct {
+    unsigned long long trade_buy_successes_cumulative;
+    unsigned long long trade_sell_successes_cumulative;
+} TradeSuccessTotals;
+
 typedef struct Entity Entity;
 struct Entity {
     int type;
@@ -574,10 +602,9 @@ struct Entity {
     int time_alive;
     int purchases;
     int sales;
-    int trade_buy_attempts;
-    int trade_buy_successes;
-    int trade_sell_attempts;
-    int trade_sell_successes;
+    TradeCounters trade_counters;
+    int trade_buy_pending;
+    int trade_sell_pending;
 };
 
 typedef struct Item Item;
@@ -752,6 +779,7 @@ struct MMO {
     RespawnBuffer* enemy_respawn_buffer;
     RespawnBuffer* drop_respawn_buffer;
     Log log;
+    TradeSuccessTotals trade_success_totals;
     unsigned int rng;
     float reward_combat_level;
     float reward_prof_level;
@@ -771,6 +799,10 @@ struct MMO {
     char strategy_history[STRATEGY_HISTORY_SIZE][STRATEGY_HISTORY_ENTRY_SIZE];
     int strategy_history_count;
     int strategy_history_next;
+    Reward strategy_interval_returns;
+    Reward strategy_previous_returns;
+    unsigned long long strategy_interval_ticks;
+    unsigned long long strategy_previous_ticks;
 };
 
 Entity* get_entity(MMO* env, int pid) {
@@ -781,10 +813,26 @@ Entity* get_entity(MMO* env, int pid) {
     }
 }
 
+static inline void fail_pending_buy(Entity* entity) {
+    if (entity->trade_buy_pending) {
+        entity->trade_counters.trade_buy_failures += 1;
+        entity->trade_buy_pending = 0;
+    }
+}
+
+static inline void fail_pending_sell(Entity* entity) {
+    if (entity->trade_sell_pending) {
+        entity->trade_counters.trade_sell_failures += 1;
+        entity->trade_sell_pending = 0;
+    }
+}
+
 void add_player_log(MMO* env, int pid) {
     Reward * ret = &env->returns[pid];
     Entity* player = get_entity(env, pid);
     Log* log = &env->log;
+    fail_pending_buy(player);
+    fail_pending_sell(player);
     log->return_comb_lvl += ret->comb_lvl;
     log->return_prof_lvl += ret->prof_lvl;
     log->return_item_atk_lvl += ret->item_atk_lvl;
@@ -796,10 +844,12 @@ void add_player_log(MMO* env, int pid) {
     log->min_comb_prof += (player->prof_lvl > player->comb_lvl) ? player->comb_lvl : player->prof_lvl;
     log->purchases += player->purchases;
     log->sales += player->sales;
-    log->trade_buy_attempts += player->trade_buy_attempts;
-    log->trade_buy_successes += player->trade_buy_successes;
-    log->trade_sell_attempts += player->trade_sell_attempts;
-    log->trade_sell_successes += player->trade_sell_successes;
+    log->trade_buy_attempts += player->trade_counters.trade_buy_attempts;
+    log->trade_buy_successes += player->trade_counters.trade_buy_successes;
+    log->trade_buy_failures += player->trade_counters.trade_buy_failures;
+    log->trade_sell_attempts += player->trade_counters.trade_sell_attempts;
+    log->trade_sell_successes += player->trade_counters.trade_sell_successes;
+    log->trade_sell_failures += player->trade_counters.trade_sell_failures;
     log->equip_attack += player->equipment_attack;
     log->equip_defense += player->equipment_defense;
     log->r += player->r;
@@ -815,6 +865,7 @@ void add_player_log(MMO* env, int pid) {
     log->perf = log->min_comb_prof / (float)env->levels;
     log->n++;
     *ret = (Reward){0};
+    player->trade_counters = (TradeCounters){0};
     if (pid < env->num_agents) {
         env->terminals[pid] = 1.0f;
     }
@@ -838,6 +889,10 @@ void init(MMO* env) {
     env->strategy_history_count = 0;
     env->strategy_history_next = 0;
     memset(env->strategy_history, 0, sizeof(env->strategy_history));
+    env->strategy_interval_returns = (Reward){0};
+    env->strategy_previous_returns = (Reward){0};
+    env->strategy_interval_ticks = 0;
+    env->strategy_previous_ticks = 0;
 
     int sz = env->width*env->height;
     env->counts = calloc(sz, sizeof(unsigned char));
@@ -1136,10 +1191,9 @@ void spawn(MMO* env, Entity* entity) {
     entity->time_alive = 0;
     entity->purchases = 0;
     entity->sales = 0;
-    entity->trade_buy_attempts = 0;
-    entity->trade_buy_successes = 0;
-    entity->trade_sell_attempts = 0;
-    entity->trade_sell_successes = 0;
+    entity->trade_counters = (TradeCounters){0};
+    entity->trade_buy_pending = 0;
+    entity->trade_sell_pending = 0;
 
     int idx = safe_tile(env, 5);
     int r = idx / env->width;
@@ -1257,6 +1311,7 @@ void pickup_item(MMO* env, int pid) {
         player->prof_lvl += 1;
         reward->prof_lvl = env->reward_prof_level;
         ret->prof_lvl += env->reward_prof_level;
+        env->strategy_interval_returns.prof_lvl += env->reward_prof_level;
     }
 
     // Some items are different on the ground and in inventory
@@ -1498,6 +1553,7 @@ void attack(MMO* env, int pid, int target_id) {
         Reward* ret = &env->returns[target_id];
         reward->death = env->reward_death;
         ret->death += env->reward_death;
+        env->strategy_interval_returns.death += env->reward_death;
         add_player_log(env, target_id);
     } else {
         // Add to respawn buffer
@@ -1517,6 +1573,7 @@ void attack(MMO* env, int pid, int target_id) {
             attacker->comb_lvl += 1;
             reward->comb_lvl = env->reward_combat_level;
             ret->comb_lvl += env->reward_combat_level;
+            env->strategy_interval_returns.comb_lvl += env->reward_combat_level;
         }
         if (defender->type == ENTITY_ENEMY) {
             drop_loot(env, target_id);
@@ -1639,14 +1696,17 @@ void use_item(MMO* env, int pid, int inventory_idx) {
     if (item_type == I_TOOL) {
         reward->item_tool_lvl = item_reward;
         ret->item_tool_lvl += item_reward;
+        env->strategy_interval_returns.item_tool_lvl += item_reward;
     } else {
         if (attack > 0) {
             reward->item_atk_lvl = item_reward;
             ret->item_atk_lvl += item_reward;
+            env->strategy_interval_returns.item_atk_lvl += item_reward;
         }
         if (defense > 0) {
             reward->item_def_lvl = item_reward;
             ret->item_def_lvl += item_reward;
+            env->strategy_interval_returns.item_def_lvl += item_reward;
         }
     }
 
@@ -2106,14 +2166,19 @@ void c_step(MMO* env) {
                 entity->ui_mode = MODE_PLAY;
             }
             if (!is_num(action)) {
+                if (action != ATN_NOOP) {
+                    fail_pending_buy(entity);
+                }
                 continue;
             }
             if (entity->in_combat > 0) {
+                fail_pending_buy(entity);
                 continue;
             }
             int action_idx = action - ATN_ONE;
             if (ui_mode == MODE_BUY_TIER) {
                 if (action_idx >= env->tiers) {
+                    fail_pending_buy(entity);
                     continue;
                 }
                 entity->market_tier = action_idx + 1;
@@ -2121,6 +2186,7 @@ void c_step(MMO* env) {
                 continue;
             }
             if (action_idx >= 11) {
+                fail_pending_buy(entity);
                 continue;
             }
             int market_tier = entity->market_tier;
@@ -2129,6 +2195,7 @@ void c_step(MMO* env) {
 
             int stock = market->stock;
             if (stock == 0) {
+                fail_pending_buy(entity);
                 continue;
             }
 
@@ -2137,11 +2204,13 @@ void c_step(MMO* env) {
             int price = offer->price;
             Entity* buyer = get_entity(env, pid);
             if (buyer->gold < price) {
+                fail_pending_buy(entity);
                 continue;
             }
 
             int inventory_idx = get_free_inventory_idx(env, pid);
             if (inventory_idx == -1) {
+                fail_pending_buy(entity);
                 continue;
             }
          
@@ -2159,6 +2228,7 @@ void c_step(MMO* env) {
             reward->market_buy = env->reward_market;
             Reward* ret = &env->returns[pid];
             ret->market_buy += env->reward_market;
+            env->strategy_interval_returns.market_buy += env->reward_market;
             // env->rewards[buyer_id].gold += price;
             // if (env->rewards[buyer_id].gold > 99) {
             //     env->rewards[buyer_id].gold = 99;
@@ -2166,31 +2236,43 @@ void c_step(MMO* env) {
             
             entity->inventory[inventory_idx] = item_id;
             entity->purchases += 1;
-            entity->trade_buy_successes += 1;
+            entity->trade_counters.trade_buy_successes += 1;
+            env->trade_success_totals.trade_buy_successes_cumulative += 1;
+            entity->trade_buy_pending = 0;
         } else if (is_sell(ui_mode)) {
             if (action != ATN_NOOP) {
                 entity->ui_mode = MODE_PLAY;
             }
             if (!is_num(action)) {
+                if (action != ATN_NOOP) {
+                    fail_pending_sell(entity);
+                }
                 continue;
             }
             if (entity->in_combat > 0) {
+                fail_pending_sell(entity);
                 continue;
             }
             int action_idx = action - ATN_ONE;
             if (ui_mode == MODE_SELL_SELECT) {
                 int item_type = entity->inventory[action_idx];
                 if (item_type == 0) {
+                    fail_pending_sell(entity);
                     continue;
                 }
                 entity->sell_idx = action_idx;
                 entity->ui_mode = MODE_SELL_PRICE;
                 continue;
             }
+            if (action_idx >= 11) {
+                fail_pending_sell(entity);
+                continue;
+            }
             int price = action_idx + 1; //sell_price(action_idx);
             int inventory_idx = entity->sell_idx;
             int item_type = entity->inventory[inventory_idx];
             if (item_type == 0) {
+                fail_pending_sell(entity);
                 continue;
             }
             if (entity->is_equipped[inventory_idx]) {
@@ -2202,6 +2284,7 @@ void c_step(MMO* env) {
 
             // TODO: Will have to update once prices become dynamic
             if (stock == MAX_MARKET_OFFERS) {
+                fail_pending_sell(entity);
                 continue;
             }
 
@@ -2214,11 +2297,14 @@ void c_step(MMO* env) {
 
             entity->inventory[inventory_idx] = 0;
             entity->sales += 1;
-            entity->trade_sell_successes += 1;
+            entity->trade_counters.trade_sell_successes += 1;
+            env->trade_success_totals.trade_sell_successes_cumulative += 1;
+            entity->trade_sell_pending = 0;
             env->market_sells += 1;
             reward->market_sell = env->reward_market;
             Reward* ret = &env->returns[pid];
             ret->market_sell += env->reward_market;
+            env->strategy_interval_returns.market_sell += env->reward_market;
         } else if (action == ATN_ATTACK) {
             int target_id = find_target(env, pid, ENTITY_ENEMY);
             if (target_id != -1) {
@@ -2231,10 +2317,12 @@ void c_step(MMO* env) {
         } else if (is_num(action)) {
             use_item(env, pid, action - ATN_ONE);
         } else if (action == ATN_BUY) {
-            entity->trade_buy_attempts += 1;
+            entity->trade_counters.trade_buy_attempts += 1;
+            entity->trade_buy_pending = 1;
             entity->ui_mode = MODE_BUY_TIER;
         } else if (action == ATN_SELL) {
-            entity->trade_sell_attempts += 1;
+            entity->trade_counters.trade_sell_attempts += 1;
+            entity->trade_sell_pending = 1;
             entity->ui_mode = MODE_SELL_SELECT;
         }
     }
@@ -2258,6 +2346,7 @@ void c_step(MMO* env) {
             + reward->item_tool_lvl + reward->market_buy + reward->market_sell
         );
     }
+    env->strategy_interval_ticks += 1;
 }
 
 #define FRAME_RATE 60
