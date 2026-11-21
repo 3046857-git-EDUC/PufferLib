@@ -1,6 +1,3 @@
-#ifndef NMMO3_H
-#define NMMO3_H
-
 // Neural MMO 3 by Joseph Suarez
 // This was the first new environment I started for Puffer Ocean.
 // I started it in Cython and then ported it to C. This is why there
@@ -16,10 +13,6 @@
 #include <math.h>
 #include <float.h>
 #include <stdbool.h>
-#include <signal.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
 #include <assert.h>
 #include <time.h>
 #include <limits.h>
@@ -231,45 +224,19 @@ struct Log {
     float return_prof_lvl;
     float return_item_atk_lvl;
     float return_item_def_lvl;
-    float return_item_tool_lvl;
     float return_market_buy;
     float return_market_sell;
     float return_death;
     float min_comb_prof;
     float purchases;
     float sales;
-    float trade_buy_attempts;
-    float trade_buy_successes;
-    float trade_buy_failures;
-    float trade_sell_attempts;
-    float trade_sell_successes;
-    float trade_sell_failures;
     float equip_attack;
     float equip_defense;
+	float num_agents;
+	float width;
     float r;
     float c;
-    float strategy_decisions;
-    float strategy_failures;
-    float strategy_updates;
-    float llm_input_tokens;
-    float llm_output_tokens;
-    float llm_cumulative_input_tokens;
-    float llm_cumulative_output_tokens;
-    float comb_lvl;
-    float prof_lvl;
 };
-
-#define MY_LOG_SUM_FIELDS(X) \
-    X(trade_buy_attempts) \
-    X(trade_buy_successes) \
-    X(trade_buy_failures) \
-    X(trade_sell_attempts) \
-    X(trade_sell_successes) \
-    X(trade_sell_failures)
-
-#define MY_LOG_CUMULATIVE_FIELDS(X) \
-    X(trade_buy_successes_cumulative) \
-    X(trade_sell_successes_cumulative)
  
 // TODO: This is actually simplex and we should probably use the original impl
 // ALSO: Not seeded correctly
@@ -556,20 +523,6 @@ void generate_terrain(char* terrain, unsigned char* rendered,
     free(biomes);
 }
 
-typedef struct {
-    float trade_buy_attempts;
-    float trade_buy_successes;
-    float trade_buy_failures;
-    float trade_sell_attempts;
-    float trade_sell_successes;
-    float trade_sell_failures;
-} TradeCounters;
-
-typedef struct {
-    unsigned long long trade_buy_successes_cumulative;
-    unsigned long long trade_sell_successes_cumulative;
-} TradeSuccessTotals;
-
 typedef struct Entity Entity;
 struct Entity {
     int type;
@@ -602,9 +555,6 @@ struct Entity {
     int time_alive;
     int purchases;
     int sales;
-    TradeCounters trade_counters;
-    int trade_buy_pending;
-    int trade_sell_pending;
 };
 
 typedef struct Item Item;
@@ -634,11 +584,6 @@ void init_items() {
 }
 
 #define MAX_MARKET_OFFERS 32
-#define STRATEGY_HISTORY_SIZE 4
-#define STRATEGY_HISTORY_ENTRY_SIZE 96
-#define QWEN3_HISTORY_SIZE STRATEGY_HISTORY_SIZE
-#define QWEN3_HISTORY_ENTRY_SIZE STRATEGY_HISTORY_ENTRY_SIZE
-#define NMMO3_OBS_SIZE (11 * 15 * 10 + 47 + 10)
 
 typedef struct MarketOffer MarketOffer;
 struct MarketOffer {
@@ -667,6 +612,7 @@ int peek_price(ItemMarket* market) {
 typedef struct Reward Reward;
 struct Reward{
     float death;
+    float pioneer;
     float comb_lvl;
     float prof_lvl;
     float item_atk_lvl;
@@ -674,15 +620,6 @@ struct Reward{
     float item_tool_lvl;
     float market_buy;
     float market_sell;
-};
-
-typedef struct RewardWeights RewardWeights;
-struct RewardWeights {
-    float combat_level;
-    float prof_level;
-    float item_level;
-    float market;
-    float death;
 };
 
 typedef struct Respawnable Respawnable;
@@ -779,30 +716,21 @@ struct MMO {
     RespawnBuffer* enemy_respawn_buffer;
     RespawnBuffer* drop_respawn_buffer;
     Log log;
-    TradeSuccessTotals trade_success_totals;
     unsigned int rng;
     float reward_combat_level;
     float reward_prof_level;
     float reward_item_level;
     float reward_market;
     float reward_death;
-    float gamma_default;
-    float gamma_exploration;
-    RewardWeights default_reward_weights;
-    int reward_weights_expire_tick;
-    unsigned long long llm_cumulative_input_tokens;
-    unsigned long long llm_cumulative_output_tokens;
-    int strategy_pid;
-    int strategy_output_fd;
-    char strategy_response[2048];
-    int strategy_response_bytes;
-    char strategy_history[STRATEGY_HISTORY_SIZE][STRATEGY_HISTORY_ENTRY_SIZE];
-    int strategy_history_count;
-    int strategy_history_next;
-    Reward strategy_interval_returns;
-    Reward strategy_previous_returns;
-    unsigned long long strategy_interval_ticks;
-    unsigned long long strategy_previous_ticks;
+    // HAL-only fields. Disabled by default: preserve baseline reward behavior.
+    int hal_reward_enabled;
+    float hal_strength;
+    float hal_pioneer_bonus;
+    float hal_tool_bonus;
+    float hal_shaping_cap;
+    float hal_preferences[9];
+    float* hal_float_rewards; // num_agents x 10, optional full-precision side buffer
+
 };
 
 Entity* get_entity(MMO* env, int pid) {
@@ -813,50 +741,27 @@ Entity* get_entity(MMO* env, int pid) {
     }
 }
 
-static inline void fail_pending_buy(Entity* entity) {
-    if (entity->trade_buy_pending) {
-        entity->trade_counters.trade_buy_failures += 1;
-        entity->trade_buy_pending = 0;
-    }
-}
-
-static inline void fail_pending_sell(Entity* entity) {
-    if (entity->trade_sell_pending) {
-        entity->trade_counters.trade_sell_failures += 1;
-        entity->trade_sell_pending = 0;
-    }
-}
-
 void add_player_log(MMO* env, int pid) {
     Reward * ret = &env->returns[pid];
     Entity* player = get_entity(env, pid);
     Log* log = &env->log;
-    fail_pending_buy(player);
-    fail_pending_sell(player);
     log->return_comb_lvl += ret->comb_lvl;
     log->return_prof_lvl += ret->prof_lvl;
     log->return_item_atk_lvl += ret->item_atk_lvl;
     log->return_item_def_lvl += ret->item_def_lvl;
-    log->return_item_tool_lvl += ret->item_tool_lvl;
     log->return_market_buy += ret->market_buy;
     log->return_market_sell += ret->market_sell;
     log->return_death += ret->death;
     log->min_comb_prof += (player->prof_lvl > player->comb_lvl) ? player->comb_lvl : player->prof_lvl;
     log->purchases += player->purchases;
     log->sales += player->sales;
-    log->trade_buy_attempts += player->trade_counters.trade_buy_attempts;
-    log->trade_buy_successes += player->trade_counters.trade_buy_successes;
-    log->trade_buy_failures += player->trade_counters.trade_buy_failures;
-    log->trade_sell_attempts += player->trade_counters.trade_sell_attempts;
-    log->trade_sell_successes += player->trade_counters.trade_sell_successes;
-    log->trade_sell_failures += player->trade_counters.trade_sell_failures;
     log->equip_attack += player->equipment_attack;
     log->equip_defense += player->equipment_defense;
     log->r += player->r;
     log->c += player->c;
     log->episode_return += (
         ret->comb_lvl + ret->prof_lvl
-        + ret->item_atk_lvl + ret->item_def_lvl + ret->item_tool_lvl
+        + ret->item_atk_lvl + ret->item_def_lvl
         + ret->market_buy + ret->market_sell
         + ret->death
     );
@@ -865,7 +770,6 @@ void add_player_log(MMO* env, int pid) {
     log->perf = log->min_comb_prof / (float)env->levels;
     log->n++;
     *ret = (Reward){0};
-    player->trade_counters = (TradeCounters){0};
     if (pid < env->num_agents) {
         env->terminals[pid] = 1.0f;
     }
@@ -873,26 +777,6 @@ void add_player_log(MMO* env, int pid) {
 
 void init(MMO* env) {
     init_items();
-    env->default_reward_weights = (RewardWeights){
-        .combat_level = env->reward_combat_level,
-        .prof_level = env->reward_prof_level,
-        .item_level = env->reward_item_level,
-        .market = env->reward_market,
-        .death = env->reward_death,
-    };
-    env->reward_weights_expire_tick = 0;
-    env->llm_cumulative_input_tokens = 0;
-    env->llm_cumulative_output_tokens = 0;
-    env->strategy_pid = -1;
-    env->strategy_output_fd = -1;
-    env->strategy_response_bytes = 0;
-    env->strategy_history_count = 0;
-    env->strategy_history_next = 0;
-    memset(env->strategy_history, 0, sizeof(env->strategy_history));
-    env->strategy_interval_returns = (Reward){0};
-    env->strategy_previous_returns = (Reward){0};
-    env->strategy_interval_ticks = 0;
-    env->strategy_previous_ticks = 0;
 
     int sz = env->width*env->height;
     env->counts = calloc(sz, sizeof(unsigned char));
@@ -921,19 +805,16 @@ void init(MMO* env) {
 
 void allocate_mmo(MMO* env) {
     // TODO: Not hardcode
-    env->observations = calloc(env->num_agents * NMMO3_OBS_SIZE, sizeof(unsigned char));
+    env->observations = calloc(env->num_agents*(11*15*10+47+10), sizeof(unsigned char));
     env->rewards = calloc(env->num_agents, sizeof(float));
+    env->hal_float_rewards = calloc(env->num_agents * 10, sizeof(float));
+
     env->terminals = calloc(env->num_agents, sizeof(float));
     env->actions = calloc(env->num_agents, sizeof(float));
     init(env);
 }
 
 void c_close(MMO* env) {
-    if (env->strategy_pid > 0) {
-        kill(env->strategy_pid, SIGKILL);
-        waitpid(env->strategy_pid, NULL, 0);
-    }
-    if (env->strategy_output_fd >= 0) close(env->strategy_output_fd);
     free(env->counts);
     free(env->terrain);
     free(env->rendered);
@@ -948,6 +829,8 @@ void c_close(MMO* env) {
 void free_allocated_mmo(MMO* env) {
     free(env->observations);
     free(env->rewards);
+    free(env->hal_float_rewards);
+
     free(env->terminals);
     free(env->returns);
     free(env->reward_struct);
@@ -1072,7 +955,7 @@ void compute_all_obs(MMO* env) {
         assert(end_col <= env->width);
 
         int comb_lvl = player->comb_lvl;
-        int obs_adr = pid * NMMO3_OBS_SIZE;
+        int obs_adr = pid*(11*15*10+47+10);
         for (int obs_r = start_row; obs_r < end_row; obs_r++) {
             for (int obs_c = start_col; obs_c < end_col; obs_c++) {
                 int map_adr = map_offset(env, obs_r, obs_c);
@@ -1140,8 +1023,7 @@ void compute_all_obs(MMO* env) {
         // Reward observation
         Reward* reward = &env->reward_struct[pid];
         env->observations[obs_adr+47] = (reward->death == 0) ? 0 : 1;
-        // Keep the retired pioneer slot zeroed to preserve observation shape.
-        env->observations[obs_adr+48] = 0;
+        env->observations[obs_adr+48] = (reward->pioneer == 0) ? 0 : 1;
         env->observations[obs_adr+49] = reward->comb_lvl / 20;
         env->observations[obs_adr+50] = reward->prof_lvl / 20;
         env->observations[obs_adr+51] = reward->item_atk_lvl / 20;
@@ -1149,7 +1031,6 @@ void compute_all_obs(MMO* env) {
         env->observations[obs_adr+53] = reward->item_tool_lvl / 20;
         env->observations[obs_adr+54] = reward->market_buy / 20;
         env->observations[obs_adr+55] = reward->market_sell / 20;
-
     }
 }
 
@@ -1191,9 +1072,6 @@ void spawn(MMO* env, Entity* entity) {
     entity->time_alive = 0;
     entity->purchases = 0;
     entity->sales = 0;
-    entity->trade_counters = (TradeCounters){0};
-    entity->trade_buy_pending = 0;
-    entity->trade_sell_pending = 0;
 
     int idx = safe_tile(env, 5);
     int r = idx / env->width;
@@ -1311,7 +1189,6 @@ void pickup_item(MMO* env, int pid) {
         player->prof_lvl += 1;
         reward->prof_lvl = env->reward_prof_level;
         ret->prof_lvl += env->reward_prof_level;
-        env->strategy_interval_returns.prof_lvl += env->reward_prof_level;
     }
 
     // Some items are different on the ground and in inventory
@@ -1335,10 +1212,6 @@ inline bool dest_check(MMO* env, int r, int c) {
     return PASSABLE[(int)env->terrain[adr]] & (env->pids[adr] == -1);
 }
 
-int nmmo3_strategy_step(MMO* env, int pid);
-void nmmo3_restore_default_reward_weights(MMO* env);
-void nmmo3_expire_reward_weights(MMO* env);
-#define nmmo3_qwen3_strategy nmmo3_strategy_step
 void move(MMO* env, int pid, int direction, bool run) {
     Entity* entity = get_entity(env, pid);
     int r = entity->r;
@@ -1374,6 +1247,7 @@ void move(MMO* env, int pid, int direction, bool run) {
     // Update visitation map. Skips run tiles
     if (entity->type == ENTITY_PLAYER) {
         if (env->counts[map_offset(env, rr, cc)] == 0) {
+            env->reward_struct[pid].pioneer = 1.0;
         }
         if (env->counts[map_offset(env, rr, cc)] < 255) {
             env->counts[map_offset(env, rr, cc)] += 1;
@@ -1553,7 +1427,7 @@ void attack(MMO* env, int pid, int target_id) {
         Reward* ret = &env->returns[target_id];
         reward->death = env->reward_death;
         ret->death += env->reward_death;
-        env->strategy_interval_returns.death += env->reward_death;
+        env->reward_struct[target_id].death = -1;
         add_player_log(env, target_id);
     } else {
         // Add to respawn buffer
@@ -1573,7 +1447,6 @@ void attack(MMO* env, int pid, int target_id) {
             attacker->comb_lvl += 1;
             reward->comb_lvl = env->reward_combat_level;
             ret->comb_lvl += env->reward_combat_level;
-            env->strategy_interval_returns.comb_lvl += env->reward_combat_level;
         }
         if (defender->type == ENTITY_ENEMY) {
             drop_loot(env, target_id);
@@ -1665,7 +1538,6 @@ void use_item(MMO* env, int pid, int inventory_idx) {
         player->equipment_defense -= defense;
         if (item_type == I_TOOL) {
             reward->item_tool_lvl = -item_reward;
-            ret->item_tool_lvl -= item_reward;
         } else {
             if (attack > 0) {
                 reward->item_atk_lvl = -item_reward;
@@ -1695,18 +1567,14 @@ void use_item(MMO* env, int pid, int inventory_idx) {
     player->equipment_defense += defense;
     if (item_type == I_TOOL) {
         reward->item_tool_lvl = item_reward;
-        ret->item_tool_lvl += item_reward;
-        env->strategy_interval_returns.item_tool_lvl += item_reward;
     } else {
         if (attack > 0) {
             reward->item_atk_lvl = item_reward;
             ret->item_atk_lvl += item_reward;
-            env->strategy_interval_returns.item_atk_lvl += item_reward;
         }
         if (defense > 0) {
             reward->item_def_lvl = item_reward;
             ret->item_def_lvl += item_reward;
-            env->strategy_interval_returns.item_def_lvl += item_reward;
         }
     }
 
@@ -1785,7 +1653,6 @@ void enemy_ai(MMO* env, int pid) {
 
 void c_reset(MMO* env) {
     env->tick = 0;
-    nmmo3_restore_default_reward_weights(env);
 
     env->market_sells = 0;
     env->market_buys = 0;
@@ -1873,7 +1740,7 @@ void c_reset(MMO* env) {
         //int tier = 1 + env->tiers*level/env->levels;
         int tier = 0;
         while (tier < 1 || tier > env->tiers) {
-            tier = sample_exponential(3.0, &env->rng);
+            tier = sample_exponential(1, &env->rng);
         }
 
         if (spawned) {
@@ -1990,32 +1857,6 @@ void c_reset(MMO* env) {
 void c_step(MMO* env) {
     env->tick += 1;
     int tick = env->tick;
-    nmmo3_expire_reward_weights(env);
-    env->log.llm_cumulative_input_tokens =
-        (float)env->llm_cumulative_input_tokens;
-    env->log.llm_cumulative_output_tokens =
-        (float)env->llm_cumulative_output_tokens;
-
-    int strategy_interval = 720;
-    const char* strategy_interval_env = getenv("NMMO3_STRATEGY_INTERVAL");
-    if (strategy_interval_env == NULL) {
-        strategy_interval_env = getenv("NMMO3_QWEN3_INTERVAL");
-    }
-    if (strategy_interval_env != NULL) {
-        int configured_interval = atoi(strategy_interval_env);
-        if (configured_interval > 0) {
-            strategy_interval = configured_interval;
-        }
-    }
-    const char* use_strategy = getenv("NMMO3_USE_STRATEGY");
-    const char* use_qwen3 = getenv("NMMO3_USE_QWEN3");
-    bool strategy_enabled = (use_strategy != NULL && (strcmp(use_strategy, "1") == 0 || strcmp(use_strategy, "true") == 0)) ||
-                           (use_qwen3 != NULL && (strcmp(use_qwen3, "1") == 0 || strcmp(use_qwen3, "true") == 0));
-    if (strategy_enabled && env->num_agents > 0) {
-        if (env->strategy_pid > 0 || tick % strategy_interval == 0) {
-            (void)nmmo3_strategy_step(env, 0);
-        }
-    }
 
     // Respawn resources
     RespawnBuffer* buffer = env->resource_respawn_buffer;
@@ -2166,19 +2007,14 @@ void c_step(MMO* env) {
                 entity->ui_mode = MODE_PLAY;
             }
             if (!is_num(action)) {
-                if (action != ATN_NOOP) {
-                    fail_pending_buy(entity);
-                }
                 continue;
             }
             if (entity->in_combat > 0) {
-                fail_pending_buy(entity);
                 continue;
             }
             int action_idx = action - ATN_ONE;
             if (ui_mode == MODE_BUY_TIER) {
                 if (action_idx >= env->tiers) {
-                    fail_pending_buy(entity);
                     continue;
                 }
                 entity->market_tier = action_idx + 1;
@@ -2186,7 +2022,6 @@ void c_step(MMO* env) {
                 continue;
             }
             if (action_idx >= 11) {
-                fail_pending_buy(entity);
                 continue;
             }
             int market_tier = entity->market_tier;
@@ -2195,7 +2030,6 @@ void c_step(MMO* env) {
 
             int stock = market->stock;
             if (stock == 0) {
-                fail_pending_buy(entity);
                 continue;
             }
 
@@ -2204,13 +2038,11 @@ void c_step(MMO* env) {
             int price = offer->price;
             Entity* buyer = get_entity(env, pid);
             if (buyer->gold < price) {
-                fail_pending_buy(entity);
                 continue;
             }
 
             int inventory_idx = get_free_inventory_idx(env, pid);
             if (inventory_idx == -1) {
-                fail_pending_buy(entity);
                 continue;
             }
          
@@ -2228,7 +2060,6 @@ void c_step(MMO* env) {
             reward->market_buy = env->reward_market;
             Reward* ret = &env->returns[pid];
             ret->market_buy += env->reward_market;
-            env->strategy_interval_returns.market_buy += env->reward_market;
             // env->rewards[buyer_id].gold += price;
             // if (env->rewards[buyer_id].gold > 99) {
             //     env->rewards[buyer_id].gold = 99;
@@ -2236,43 +2067,30 @@ void c_step(MMO* env) {
             
             entity->inventory[inventory_idx] = item_id;
             entity->purchases += 1;
-            entity->trade_counters.trade_buy_successes += 1;
-            env->trade_success_totals.trade_buy_successes_cumulative += 1;
-            entity->trade_buy_pending = 0;
         } else if (is_sell(ui_mode)) {
             if (action != ATN_NOOP) {
                 entity->ui_mode = MODE_PLAY;
             }
             if (!is_num(action)) {
-                if (action != ATN_NOOP) {
-                    fail_pending_sell(entity);
-                }
                 continue;
             }
             if (entity->in_combat > 0) {
-                fail_pending_sell(entity);
                 continue;
             }
             int action_idx = action - ATN_ONE;
             if (ui_mode == MODE_SELL_SELECT) {
                 int item_type = entity->inventory[action_idx];
                 if (item_type == 0) {
-                    fail_pending_sell(entity);
                     continue;
                 }
                 entity->sell_idx = action_idx;
                 entity->ui_mode = MODE_SELL_PRICE;
                 continue;
             }
-            if (action_idx >= 11) {
-                fail_pending_sell(entity);
-                continue;
-            }
             int price = action_idx + 1; //sell_price(action_idx);
             int inventory_idx = entity->sell_idx;
             int item_type = entity->inventory[inventory_idx];
             if (item_type == 0) {
-                fail_pending_sell(entity);
                 continue;
             }
             if (entity->is_equipped[inventory_idx]) {
@@ -2284,7 +2102,6 @@ void c_step(MMO* env) {
 
             // TODO: Will have to update once prices become dynamic
             if (stock == MAX_MARKET_OFFERS) {
-                fail_pending_sell(entity);
                 continue;
             }
 
@@ -2297,14 +2114,10 @@ void c_step(MMO* env) {
 
             entity->inventory[inventory_idx] = 0;
             entity->sales += 1;
-            entity->trade_counters.trade_sell_successes += 1;
-            env->trade_success_totals.trade_sell_successes_cumulative += 1;
-            entity->trade_sell_pending = 0;
             env->market_sells += 1;
             reward->market_sell = env->reward_market;
             Reward* ret = &env->returns[pid];
             ret->market_sell += env->reward_market;
-            env->strategy_interval_returns.market_sell += env->reward_market;
         } else if (action == ATN_ATTACK) {
             int target_id = find_target(env, pid, ENTITY_ENEMY);
             if (target_id != -1) {
@@ -2317,36 +2130,46 @@ void c_step(MMO* env) {
         } else if (is_num(action)) {
             use_item(env, pid, action - ATN_ONE);
         } else if (action == ATN_BUY) {
-            entity->trade_counters.trade_buy_attempts += 1;
-            entity->trade_buy_pending = 1;
             entity->ui_mode = MODE_BUY_TIER;
         } else if (action == ATN_SELL) {
-            entity->trade_counters.trade_sell_attempts += 1;
-            entity->trade_sell_pending = 1;
             entity->ui_mode = MODE_SELL_SELECT;
         }
-    }
-    float comb_lvl = 0;
-    float prof_lvl = 0;
-    for (int pid = 0; pid < env->num_agents; pid++) {
-        comb_lvl += env->players[pid].comb_lvl;
-        prof_lvl += env->players[pid].prof_lvl;
-    }
-    // vecenv averages Log fields by episode count before displaying them.
-    if (env->num_agents > 0) {
-        env->log.comb_lvl = comb_lvl / env->num_agents * env->log.n;
-        env->log.prof_lvl = prof_lvl / env->num_agents * env->log.n;
     }
     compute_all_obs(env);
     for (int pid = 0; pid < env->num_agents; pid++) {
         Reward* reward = &env->reward_struct[pid];
-        env->rewards[pid] = (
+        // Baseline sum is byte-for-byte equivalent to the original expression.
+        float base = (
             reward->death + reward->comb_lvl
             + reward->prof_lvl + reward->item_atk_lvl + reward->item_def_lvl
-            + reward->item_tool_lvl + reward->market_buy + reward->market_sell
+            + reward->market_buy + reward->market_sell
         );
+        env->rewards[pid] = base;
+        if (env->hal_reward_enabled) {
+            const float components[9] = {
+                reward->death, reward->pioneer, reward->comb_lvl,
+                reward->prof_lvl, reward->item_atk_lvl, reward->item_def_lvl,
+                reward->item_tool_lvl, reward->market_buy, reward->market_sell
+            };
+            // Death contribution remains a penalty, even if input is malformed.
+            float delta = 0.0f;
+            for (int i = 0; i < 9; ++i) {
+                float r = components[i];
+                if (i == 0 && r > 0.0f) r = 0.0f;
+                delta += env->hal_strength * env->hal_preferences[i] * r;
+            }
+            delta += env->hal_pioneer_bonus * fmaxf(0.0f, reward->pioneer);
+            delta += env->hal_tool_bonus * reward->item_tool_lvl;
+            delta = fmaxf(-env->hal_shaping_cap,
+                          fminf(env->hal_shaping_cap, delta));
+            env->rewards[pid] = base + delta;
+            // 10 positions retained: 9 full-precision outcomes + reserved zero.
+            float* f = env->hal_float_rewards + 10*pid;
+            for (int i = 0; i < 9; ++i) f[i] = components[i];
+            f[9] = 0.0f;
+        }
+
     }
-    env->strategy_interval_ticks += 1;
 }
 
 #define FRAME_RATE 60
@@ -3389,4 +3212,4 @@ int c_render(MMO* env) {
     return action;
 }
 
-#endif
+

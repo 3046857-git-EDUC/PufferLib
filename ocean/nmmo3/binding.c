@@ -1,11 +1,8 @@
 #include "nmmo3.h"
-#include "strategy_context.c"
-#define OBS_SIZE NMMO3_OBS_SIZE
+#define OBS_SIZE 1707
 #define NUM_ATNS 1
 #define ACT_SIZES {26}
 #define OBS_TENSOR_T ByteTensor
-#define MY_USES_GAMMA
-#define MY_LOG_LLM_TOKENS
 
 #define Env MMO
 #include "vecenv.h"
@@ -30,7 +27,9 @@ void my_init(Env* env, Dict* kwargs) {
     env->reward_item_level = dict_get(kwargs, "reward_item_level")->value;
     env->reward_market = dict_get(kwargs, "reward_market")->value;
     env->reward_death = dict_get(kwargs, "reward_death")->value;
-    env->gamma_default = dict_get(kwargs, "gamma_default")->value;
+    // HAL defaults are zero-initialized. A future binding setter must set
+    // hal_reward_enabled and preferences only in the --*-strategy mode.
+    // Do not turn it on here: my_init() is shared with baseline.
     init(env);
 }
 
@@ -43,7 +42,6 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "return_prof_lvl", log->return_prof_lvl);
     dict_set(out, "return_item_atk_lvl", log->return_item_atk_lvl);
     dict_set(out, "return_item_def_lvl", log->return_item_def_lvl);
-    dict_set(out, "return_item_tool_lvl", log->return_item_tool_lvl);
     dict_set(out, "return_market_buy", log->return_market_buy);
     dict_set(out, "return_market_sell", log->return_market_sell);
     dict_set(out, "return_death", log->return_death);
@@ -54,13 +52,4 @@ void my_log(Log* log, Dict* out) {
     dict_set(out, "equip_defense", log->equip_defense);
     dict_set(out, "r", log->r);
     dict_set(out, "c", log->c);
-    dict_set(out, "strategy_decisions", log->strategy_decisions);
-    dict_set(out, "strategy_failures", log->strategy_failures);
-    dict_set(out, "strategy_updates", log->strategy_updates);
-    dict_set(out, "llm_input_tokens", log->llm_input_tokens);
-    dict_set(out, "llm_output_tokens", log->llm_output_tokens);
-    dict_set(out, "llm_cumulative_input_tokens", log->llm_cumulative_input_tokens);
-    dict_set(out, "llm_cumulative_output_tokens", log->llm_cumulative_output_tokens);
-    dict_set(out, "comb_lvl", log->comb_lvl);
-    dict_set(out, "prof_lvl", log->prof_lvl);
 }

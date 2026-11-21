@@ -1,104 +1,37 @@
-#!/usr/bin/env python3
-"""Turn an NMMO3 strategy context into dynamic reward weights and gamma using OpenAI GPT."""
+"""OpenAI GPT strategic reward preferences using Python standard library.
 
+Environment: OPENAI_API_KEY, optional OPENAI_MODEL (default gpt-4.1-mini).
+Requires network access at runtime; no calls occur during import.
+"""
 import json
 import os
-import sys
 import urllib.error
 import urllib.request
+from strategy_context import StrategyContext
+from strategy_prompt import build_messages
+from reward_shaping import parse_guidance, safe_guidance
 
-from strategy_prompt import build_strategy_prompt
-from strategy_response import parse_strategy_response
-
-MODEL = os.getenv("NMMO3_GPT_MODEL", "gpt-5.4-nano")
-REQUEST_TIMEOUT = float(os.getenv("NMMO3_GPT_TIMEOUT", "30"))
-
-
-def get_api_key():
-    key = os.getenv("OPENAI_API_KEY")
-    if key and key.strip() and not key.startswith("your_") and not key.startswith("sk-YourActual"):
-        return key.strip()
-    # Check .env file in workspace root or current directory
-    candidates = [
-        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env"),
-        os.path.join(os.getcwd(), ".env"),
-        os.path.expanduser("~/.env"),
-    ]
-    for env_file in candidates:
-        if os.path.isfile(env_file):
-            try:
-                with open(env_file, "r") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith("OPENAI_API_KEY="):
-                            val = line.split("=", 1)[1].strip().strip("'\"")
-                            if val and not val.startswith("your_") and not val.startswith("sk-YourActual"):
-                                return val
-            except Exception:
-                pass
-    return None
-
-
-def query_gpt(strategy_context):
-    api_key = get_api_key()
+def request_gpt_guidance(context: StrategyContext, model=None, timeout=30):
+    api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        raise ValueError("OPENAI_API_KEY environment variable (or .env file) is missing.")
-
-    url = "https://api.openai.com/v1/chat/completions"
-    prompt = build_strategy_prompt(strategy_context)
-
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.2
-    }
-
-    req = urllib.request.Request(
-        url,
+        raise RuntimeError("Set OPENAI_API_KEY before requesting GPT guidance")
+    model = model or os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+    payload = {"model": model, "messages": build_messages(context),
+               "temperature": 0, "response_format": {"type": "json_object"}}
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        },
-        method="POST"
-    )
+        headers={"Authorization": "Bearer " + api_key,
+                 "Content-Type": "application/json"},
+        method="POST")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        result = json.load(response)
+    content = result["choices"][0]["message"]["content"]
+    return parse_guidance(content)
 
+def request_or_fallback(context: StrategyContext, model=None):
     try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
-            data = json.load(response)
-            usage = data["usage"]
-            input_tokens = int(usage["prompt_tokens"])
-            output_tokens = int(usage["completion_tokens"])
-            print(f"Input tokens: {input_tokens}", file=sys.stderr)
-            print(f"Output tokens: {output_tokens}", file=sys.stderr)
-            print(f"Total tokens: {input_tokens + output_tokens}", file=sys.stderr)
-            text = data["choices"][0]["message"]["content"]
-            strategy = parse_strategy_response(text)
-            strategy["llm_input_tokens"] = input_tokens
-            strategy["llm_output_tokens"] = output_tokens
-            return strategy
-    except urllib.error.HTTPError as http_err:
-        err_body = http_err.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP Error {http_err.code}: {http_err.reason} - {err_body}") from http_err
-
-
-def main():
-    context = sys.stdin.read()
-    if not context.strip():
-        raise SystemExit("Empty NMMO3 strategy context")
-    try:
-        result = query_gpt(context)
-        print(json.dumps(result))
-    except Exception as error:
-        print(f"GPT request failed: {error}", file=sys.stderr)
-        raise SystemExit(1)
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        raise SystemExit(130)
+        return request_gpt_guidance(context, model=model), None
+    except (RuntimeError, ValueError, KeyError, IndexError,
+            urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return safe_guidance(), str(exc)

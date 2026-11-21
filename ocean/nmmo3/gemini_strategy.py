@@ -18,7 +18,7 @@ except ImportError as error:
 from strategy_prompt import build_strategy_prompt
 from strategy_response import parse_strategy_response
 
-MODEL = os.getenv("NMMO3_GEMINI_MODEL", "gemini-3.5-flash-lite")
+MODEL = os.getenv("NMMO3_GEMINI_MODEL", "gemini-3.8-flash")
 REQUEST_TIMEOUT = float(os.getenv("NMMO3_GEMINI_TIMEOUT", "60"))
 
 def get_api_key():

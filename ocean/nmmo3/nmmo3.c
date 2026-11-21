@@ -1,19 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
 #include "puffernet.h"
 #include "nmmo3.h"
-#include "strategy_context.h"
-#include "strategy_context.c"
 
 // Only run 1 agent in the C version
 // You can run the full 1024 on GPU
 #define NUM_AGENTS 1
-#define MMONET_PROJ_SIZE (256 + 47 * 32 + 47 + 10)
-#define MMONET_LEGACY_PROJ_SIZE 1881
 
 typedef struct MMONet MMONet;
 struct MMONet {
@@ -27,7 +20,6 @@ struct MMONet {
     Conv2D* map_conv2;
     Embedding* player_embed;
     float* proj_buffer;
-    float* proj_parameters;
     Affine* proj;
     ReLU* proj_relu;
     Linear* decoder;
@@ -47,27 +39,8 @@ MMONet* init_mmonet(Weights* weights, int num_agents) {
     net->map_relu = make_relu(num_agents, 128*3*4);
     net->map_conv2 = make_conv2d(weights, num_agents, 4, 3, 128, 128, 3, 1);
     net->player_embed = make_embedding(weights, num_agents*47, 128, 32);
-    net->proj_buffer = calloc(num_agents * MMONET_PROJ_SIZE, sizeof(float));
-    {
-        float* legacy_proj_weights = get_weights(
-            weights, MMONET_LEGACY_PROJ_SIZE * hidden);
-        float* legacy_proj_bias = get_weights(weights, hidden);
-        net->proj_parameters = calloc(
-            MMONET_PROJ_SIZE * hidden + hidden, sizeof(float));
-        for (int output = 0; output < hidden; output++) {
-            memcpy(net->proj_parameters + output * MMONET_PROJ_SIZE,
-                legacy_proj_weights + output * MMONET_LEGACY_PROJ_SIZE,
-                MMONET_PROJ_SIZE * sizeof(float));
-        }
-        memcpy(net->proj_parameters + MMONET_PROJ_SIZE * hidden,
-            legacy_proj_bias, hidden * sizeof(float));
-        Weights projection_weights = {
-            .data = net->proj_parameters,
-            .size = MMONET_PROJ_SIZE * hidden + hidden,
-        };
-        // Drop the legacy LLM feature columns while retaining the other checkpoint weights.
-        net->proj = make_affine(&projection_weights, num_agents, MMONET_PROJ_SIZE, hidden);
-    }
+    net->proj_buffer = calloc(num_agents*1817, sizeof(float));
+    net->proj = make_affine(weights, num_agents, 1817, hidden);
     net->proj_relu = make_relu(num_agents, hidden);
     net->decoder = make_linear(weights, num_agents, hidden, 26 + 1);
     net->mingru = make_mingru(weights, num_agents, hidden, 4);
@@ -86,7 +59,6 @@ void free_mmonet(MMONet* net) {
     free(net->map_conv2);
     free(net->player_embed);
     free(net->proj_buffer);
-    free(net->proj_parameters);
     free(net->proj);
     free(net->proj_relu);
     free(net->decoder);
@@ -115,7 +87,7 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
     int factors[10] = {4, 4, 17, 5, 3, 5, 5, 5, 7, 4};
     float (*ob_map)[59][11][15] = (float (*)[59][11][15])net->ob_map;
     for (int b = 0; b < net->num_agents; b++) {
-        int b_offset = b * NMMO3_OBS_SIZE;
+        int b_offset = b*(11*15*10 + 47 + 10);
         for (int i = 0; i < 11; i++) {
             for (int j = 0; j < 15; j++) {
                 int f_offset = 0;
@@ -134,7 +106,7 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
     // Player embedding subnetwork
     for (int b = 0; b < net->num_agents; b++) {
         for (int i = 0; i < 47; i++) {
-            unsigned char ob = observations[b * NMMO3_OBS_SIZE + 11 * 15 * 10 + i];
+            unsigned char ob = observations[b*(11*15*10 + 47 + 10) + 11*15*10 + i];
             net->ob_player_discrete[b*47 + i] = ob;
             net->ob_player_continuous[b*47 + i] = ob;
         }
@@ -144,13 +116,12 @@ void forward(MMONet* net, unsigned char* observations, float* terminals, float* 
     // Rewards
     for (int b = 0; b < net->num_agents; b++) {
         for (int i = 0; i < 10; i++) {
-            net->ob_reward[b * 10 + i] =
-                observations[b * NMMO3_OBS_SIZE + 11 * 15 * 10 + 47 + i];
+            net->ob_reward[b*10 + i] = observations[b*(11*15*10 + 47 + 10) + 11*15*10 + 47 + i];
         }
     }
 
     for (int b = 0; b < net->num_agents; b++) {
-        int b_offset = b * MMONET_PROJ_SIZE;
+        int b_offset = b*1817;
         for (int i = 0; i < 256; i++) {
             net->proj_buffer[b_offset + i] = net->map_conv2->output[b*256 + i];
         }
