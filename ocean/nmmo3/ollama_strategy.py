@@ -1,88 +1,69 @@
-#!/usr/bin/env python3
-"""Turn an NMMO3 strategy context into dynamic reward weights and gamma."""
+"""Ollama local high-level reward guidance for HAL.
 
+Set OLLAMA_HOST (default http://127.0.0.1:11434), OLLAMA_MODEL
+(default qwen3:4b-thinking). No Python dependencies beyond standard library.
+"""
 import json
-import sys
-import fcntl
-import http.client
 import os
+import sys
 import urllib.request
-import urllib.error
+from strategy_context import StrategyContext
+from strategy_prompt import build_messages
+from reward_shaping import parse_guidance, safe_guidance
+from strategy_cli import print_token_usage, run_strategy_cli
 
-from strategy_prompt import build_strategy_prompt
-from strategy_response import parse_strategy_response
 
-OLLAMA_URL = os.getenv("NMMO3_QWEN3_URL", "http://127.0.0.1:11434/api/generate")
-MODEL = os.getenv("NMMO3_QWEN3_MODEL", "qwen3:4b-thinking")
-REQUEST_TIMEOUT = float(os.getenv("NMMO3_QWEN3_TIMEOUT", "180"))
-CONNECTION_RETRIES = 3
-def query_ollama(strategy_context):
-    prompt = build_strategy_prompt(strategy_context)
-    request = urllib.request.Request(
-        OLLAMA_URL,
-        data=json.dumps({
-            "model": MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "think": False,
-            "temperature": 0.2,
-            "keep_alive": "10m",
-            "format": "json",
-            "options": {
-                "num_ctx": 2048,
-                "num_predict": 256,
-                "temperature": 0.2,
-            },
-        }).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+def _request_ollama_response(context: StrategyContext, model=None, timeout=60):
+    """Call Ollama /api/chat and return content plus measured token usage."""
+    base = os.getenv('OLLAMA_HOST', 'http://127.0.0.1:11434').rstrip('/')
+    if not base.startswith(('http://127.0.0.1:', 'http://localhost:', 'http://[::1]:')):
+        raise ValueError('OLLAMA_HOST must be a local loopback endpoint')
+    model = model or os.getenv('OLLAMA_MODEL', 'qwen3:4b-thinking')
+    payload = {
+        'model': model,
+        'messages': build_messages(context),
+        'stream': False,
+        'format': 'json',
+        'options': {'temperature': 0},
+        'think': False,
+    }
+    req = urllib.request.Request(
+        base + '/api/chat',
+        data=json.dumps(payload).encode('utf-8'),
+        headers={'Content-Type': 'application/json'}, method='POST',
     )
-    with open("/tmp/nmmo3-qwen3.lock", "w") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        for attempt in range(CONNECTION_RETRIES):
-            try:
-                with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
-                    payload = json.load(response)
-                    input_tokens = payload["prompt_eval_count"]
-                    output_tokens = payload["eval_count"]
-                    print(f"Input tokens: {input_tokens}", file=sys.stderr)
-                    print(f"Output tokens: {output_tokens}", file=sys.stderr)
-                    print(f"Total tokens: {input_tokens + output_tokens}", file=sys.stderr)
-                break
-            except urllib.error.URLError as error:
-                refused = isinstance(error.reason, ConnectionRefusedError)
-                if not refused or attempt == CONNECTION_RETRIES - 1:
-                    raise
-                import time
-                time.sleep(2 ** attempt)
-        else:
-            raise urllib.error.URLError("Ollama connection retry limit reached")
-    strategy = parse_strategy_response(payload.get("response", ""))
-    strategy["llm_input_tokens"] = int(input_tokens)
-    strategy["llm_output_tokens"] = int(output_tokens)
-    return strategy
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        result = json.load(response)
+    input_tokens = result.get('prompt_eval_count')
+    output_tokens = result.get('eval_count')
+    if (type(input_tokens) is not int or input_tokens < 0
+            or type(output_tokens) is not int or output_tokens < 0):
+        raise ValueError('Ollama response is missing valid token usage metadata')
+    print_token_usage(input_tokens, output_tokens)
+    content = result.get('message', {}).get('content', '')
+    return content, input_tokens, output_tokens
+
+
+def request_ollama_guidance(context: StrategyContext, model=None, timeout=60):
+    """Call Ollama /api/chat, parse strict JSON and return Guidance."""
+    content, _, _ = _request_ollama_response(context, model, timeout)
+    return parse_guidance(content)
+
+
+def request_or_fallback(context: StrategyContext, model=None, timeout=60):
+    try:
+        return request_ollama_guidance(context, model, timeout), None
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        return safe_guidance(), f'{type(exc).__name__}: {exc}'
 
 
 def main():
-    context = sys.stdin.read()
-    if not context.strip():
-        raise SystemExit("empty NMMO3 strategy context")
     try:
-        result = query_ollama(context)
-    except (
-        urllib.error.URLError,
-        http.client.RemoteDisconnected,
-        TimeoutError,
-        OSError,
-        ValueError,
-        json.JSONDecodeError,
-    ) as error:
-        raise SystemExit(1)
-    print(json.dumps(result))
+        run_strategy_cli(_request_ollama_response)
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        print(f'Ollama strategy failed: {exc}', file=sys.stderr, flush=True)
+        raise SystemExit(1) from exc
 
 
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        raise SystemExit(130)
+if __name__ == '__main__':
+    main()

@@ -1,3 +1,6 @@
+#ifndef PUFFERLIB_NMMO3_H
+#define PUFFERLIB_NMMO3_H
+
 // Neural MMO 3 by Joseph Suarez
 // This was the first new environment I started for Puffer Ocean.
 // I started it in Cython and then ported it to C. This is why there
@@ -126,6 +129,24 @@
 #define P_WANDER_RANGE 42
 #define P_RANGED 43
 
+typedef struct {
+    float trade_buy_attempts;
+    float trade_buy_successes;
+    float trade_buy_failures;
+    float trade_sell_attempts;
+    float trade_sell_successes;
+    float trade_sell_failures;
+} TradeCounters;
+
+typedef struct {
+    unsigned long long trade_buy_successes_cumulative;
+    unsigned long long trade_sell_successes_cumulative;
+} TradeSuccessTotals;
+
+#define MY_LOG_CUMULATIVE_FIELDS(X) \
+    X(trade_buy_successes_cumulative) \
+    X(trade_sell_successes_cumulative)
+
 // Items
 #define I_N 17
 #define I_NULL 0
@@ -224,19 +245,43 @@ struct Log {
     float return_prof_lvl;
     float return_item_atk_lvl;
     float return_item_def_lvl;
+    float return_item_tool_lvl;
     float return_market_buy;
     float return_market_sell;
     float return_death;
     float min_comb_prof;
     float purchases;
     float sales;
+    float trade_buy_attempts;
+    float trade_buy_successes;
+    float trade_buy_failures;
+    float trade_sell_attempts;
+    float trade_sell_successes;
+    float trade_sell_failures;
     float equip_attack;
     float equip_defense;
 	float num_agents;
 	float width;
     float r;
     float c;
+    float strategy_decisions;
+    float strategy_failures;
+    float strategy_updates;
+    float llm_input_tokens;
+    float llm_output_tokens;
+    float llm_cumulative_input_tokens;
+    float llm_cumulative_output_tokens;
+    float comb_lvl;
+    float prof_lvl;
 };
+
+#define MY_LOG_SUM_FIELDS(X) \
+    X(trade_buy_attempts) \
+    X(trade_buy_successes) \
+    X(trade_buy_failures) \
+    X(trade_sell_attempts) \
+    X(trade_sell_successes) \
+    X(trade_sell_failures)
  
 // TODO: This is actually simplex and we should probably use the original impl
 // ALSO: Not seeded correctly
@@ -555,6 +600,7 @@ struct Entity {
     int time_alive;
     int purchases;
     int sales;
+    TradeCounters trade_counters;
 };
 
 typedef struct Item Item;
@@ -716,6 +762,7 @@ struct MMO {
     RespawnBuffer* enemy_respawn_buffer;
     RespawnBuffer* drop_respawn_buffer;
     Log log;
+    TradeSuccessTotals trade_success_totals;
     unsigned int rng;
     float reward_combat_level;
     float reward_prof_level;
@@ -730,8 +777,19 @@ struct MMO {
     float hal_shaping_cap;
     float hal_preferences[9];
     float* hal_float_rewards; // num_agents x 10, optional full-precision side buffer
-
+    int strategy_enabled;
+    int strategy_interval;
+    int strategy_pid;
+    int strategy_output_fd;
+    int strategy_response_bytes;
+    char strategy_response[2048];
+    unsigned long long llm_cumulative_input_tokens;
+    unsigned long long llm_cumulative_output_tokens;
 };
+
+void nmmo3_strategy_init(MMO* env);
+int nmmo3_strategy_step(MMO* env, int pid);
+void nmmo3_strategy_close(MMO* env);
 
 Entity* get_entity(MMO* env, int pid) {
     if (pid < env->num_agents) {
@@ -749,12 +807,21 @@ void add_player_log(MMO* env, int pid) {
     log->return_prof_lvl += ret->prof_lvl;
     log->return_item_atk_lvl += ret->item_atk_lvl;
     log->return_item_def_lvl += ret->item_def_lvl;
+    log->return_item_tool_lvl += ret->item_tool_lvl;
     log->return_market_buy += ret->market_buy;
     log->return_market_sell += ret->market_sell;
     log->return_death += ret->death;
     log->min_comb_prof += (player->prof_lvl > player->comb_lvl) ? player->comb_lvl : player->prof_lvl;
     log->purchases += player->purchases;
     log->sales += player->sales;
+    log->trade_buy_attempts += player->trade_counters.trade_buy_attempts;
+    log->trade_buy_successes += player->trade_counters.trade_buy_successes;
+    log->trade_buy_failures += fmaxf(0.0f,
+        player->trade_counters.trade_buy_attempts - player->trade_counters.trade_buy_successes);
+    log->trade_sell_attempts += player->trade_counters.trade_sell_attempts;
+    log->trade_sell_successes += player->trade_counters.trade_sell_successes;
+    log->trade_sell_failures += fmaxf(0.0f,
+        player->trade_counters.trade_sell_attempts - player->trade_counters.trade_sell_successes);
     log->equip_attack += player->equipment_attack;
     log->equip_defense += player->equipment_defense;
     log->r += player->r;
@@ -770,6 +837,7 @@ void add_player_log(MMO* env, int pid) {
     log->perf = log->min_comb_prof / (float)env->levels;
     log->n++;
     *ret = (Reward){0};
+    player->trade_counters = (TradeCounters){0};
     if (pid < env->num_agents) {
         env->terminals[pid] = 1.0f;
     }
@@ -815,6 +883,7 @@ void allocate_mmo(MMO* env) {
 }
 
 void c_close(MMO* env) {
+    nmmo3_strategy_close(env);
     free(env->counts);
     free(env->terrain);
     free(env->rendered);
@@ -1072,6 +1141,7 @@ void spawn(MMO* env, Entity* entity) {
     entity->time_alive = 0;
     entity->purchases = 0;
     entity->sales = 0;
+    entity->trade_counters = (TradeCounters){0};
 
     int idx = safe_tile(env, 5);
     int r = idx / env->width;
@@ -1656,6 +1726,7 @@ void c_reset(MMO* env) {
 
     env->market_sells = 0;
     env->market_buys = 0;
+    env->trade_success_totals = (TradeSuccessTotals){0};
 
     clear_respawn_buffer(env->resource_respawn_buffer);
     clear_respawn_buffer(env->enemy_respawn_buffer);
@@ -1857,6 +1928,9 @@ void c_reset(MMO* env) {
 void c_step(MMO* env) {
     env->tick += 1;
     int tick = env->tick;
+    if (env->strategy_enabled) {
+        (void)nmmo3_strategy_step(env, 0);
+    }
 
     // Respawn resources
     RespawnBuffer* buffer = env->resource_respawn_buffer;
@@ -2067,6 +2141,8 @@ void c_step(MMO* env) {
             
             entity->inventory[inventory_idx] = item_id;
             entity->purchases += 1;
+            entity->trade_counters.trade_buy_successes += 1;
+            env->trade_success_totals.trade_buy_successes_cumulative += 1;
         } else if (is_sell(ui_mode)) {
             if (action != ATN_NOOP) {
                 entity->ui_mode = MODE_PLAY;
@@ -2114,6 +2190,8 @@ void c_step(MMO* env) {
 
             entity->inventory[inventory_idx] = 0;
             entity->sales += 1;
+            entity->trade_counters.trade_sell_successes += 1;
+            env->trade_success_totals.trade_sell_successes_cumulative += 1;
             env->market_sells += 1;
             reward->market_sell = env->reward_market;
             Reward* ret = &env->returns[pid];
@@ -2130,10 +2208,22 @@ void c_step(MMO* env) {
         } else if (is_num(action)) {
             use_item(env, pid, action - ATN_ONE);
         } else if (action == ATN_BUY) {
+            entity->trade_counters.trade_buy_attempts += 1;
             entity->ui_mode = MODE_BUY_TIER;
         } else if (action == ATN_SELL) {
+            entity->trade_counters.trade_sell_attempts += 1;
             entity->ui_mode = MODE_SELL_SELECT;
         }
+    }
+    float comb_lvl = 0.0f;
+    float prof_lvl = 0.0f;
+    for (int pid = 0; pid < env->num_agents; pid++) {
+        comb_lvl += env->players[pid].comb_lvl;
+        prof_lvl += env->players[pid].prof_lvl;
+    }
+    if (env->num_agents > 0) {
+        env->log.comb_lvl = comb_lvl / env->num_agents * env->log.n;
+        env->log.prof_lvl = prof_lvl / env->num_agents * env->log.n;
     }
     compute_all_obs(env);
     for (int pid = 0; pid < env->num_agents; pid++) {
@@ -2164,9 +2254,11 @@ void c_step(MMO* env) {
                           fminf(env->hal_shaping_cap, delta));
             env->rewards[pid] = base + delta;
             // 10 positions retained: 9 full-precision outcomes + reserved zero.
-            float* f = env->hal_float_rewards + 10*pid;
-            for (int i = 0; i < 9; ++i) f[i] = components[i];
-            f[9] = 0.0f;
+            if (env->hal_float_rewards != NULL) {
+                float* f = env->hal_float_rewards + 10*pid;
+                for (int i = 0; i < 9; ++i) f[i] = components[i];
+                f[9] = 0.0f;
+            }
         }
 
     }
@@ -3212,4 +3304,5 @@ int c_render(MMO* env) {
     return action;
 }
 
+#endif
 

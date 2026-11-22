@@ -2162,7 +2162,7 @@ std::unique_ptr<PuffeRL> create_pufferl_impl(HypersT& hypers,
     int mask_size = pufferl->vec->action_mask_size;
     register_rollout_buffers(pufferl->rollouts,
         acts, horizon, total_agents, input_size, num_action_heads, mask_size,
-        env_name == "nmmo3");
+        static_vec_supports_dynamic_gamma() != 0);
     register_train_buffers(pufferl->train_buf,
         acts, minibatch_segments, horizon, input_size,
         hidden_size, num_action_heads, num_layers, mask_size);

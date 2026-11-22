@@ -118,6 +118,7 @@ void static_vec_reset(StaticVec* vec);
 void static_vec_close(StaticVec* vec);
 void static_vec_log(StaticVec* vec, Dict* out);
 void static_vec_eval_log(StaticVec* vec, Dict* out);
+int static_vec_supports_dynamic_gamma(void);
 void static_vec_get_gammas(StaticVec* vec, float* out);
 void static_vec_record_gammas(StaticVec* vec, int buffer, int tick);
 void create_static_threads(StaticVec* vec, int num_threads, int horizon,
@@ -815,6 +816,14 @@ void static_vec_get_gammas(StaticVec* vec, float* out) {
 #endif
 }
 
+int static_vec_supports_dynamic_gamma(void) {
+#ifdef MY_USES_GAMMA
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 void static_vec_record_gammas(StaticVec* vec, int buffer, int tick) {
     if (vec->gamma_history == NULL) return;
 #ifdef MY_USES_GAMMA
@@ -983,6 +992,9 @@ void static_vec_eval_log(StaticVec* vec, Dict* out) {
         my_log(&aggregate, out);
 #ifdef MY_LOG_SUM_FIELDS
         static_vec_write_log_sum_fields(&aggregate, out);
+#endif
+#ifdef MY_LOG_CUMULATIVE_FIELDS
+        static_vec_write_cumulative_fields(&cumulative_total, out);
 #endif
         dict_set(out, "n", n);
     }

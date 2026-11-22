@@ -3,6 +3,7 @@
 #include <string.h>
 #include "puffernet.h"
 #include "nmmo3.h"
+#include "strategy_runtime.c"
 
 // Only run 1 agent in the C version
 // You can run the full 1024 on GPU

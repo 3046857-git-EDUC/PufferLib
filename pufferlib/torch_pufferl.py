@@ -156,7 +156,7 @@ class PuffeRL:
         self.rewards = torch.zeros(horizon, total_agents, device=device)
         self.terminals = torch.zeros(horizon, total_agents, device=device)
         self.gamma_values = None
-        if getattr(_C, 'env_name', None) == 'nmmo3':
+        if vec.uses_dynamic_gamma:
             self.gamma_values = torch.full(
                 (horizon, total_agents), config['gamma'], device=device)
         self.ratio = torch.ones(total_agents, horizon, device=device)

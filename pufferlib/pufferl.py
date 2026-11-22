@@ -229,6 +229,8 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
             tags=[args['tag']] if args['tag'] is not None else [],
             settings=wandb.Settings(console="off"),
         )
+        if args['env_name'] == 'nmmo3':
+            wandb.define_metric('llm/*', step_metric='agent_steps')
 
     target_key = f'env/{args["sweep"]["metric"]}'
     total_timesteps = args['train']['total_timesteps']
@@ -314,9 +316,11 @@ def _train(env_name, args, sweep_obj=None, result_queue=None, verbose=False):
                     if key.startswith('llm/')
                 }
                 if token_logs:
+                    token_step = int(flat_logs.get('agent_steps', pufferl.global_step))
+                    token_logs['agent_steps'] = token_step
                     wandb.log(
                         token_logs,
-                        step=flat_logs.get('agent_steps', pufferl.global_step))
+                        step=token_step)
             continue
 
         if args['wandb']:
@@ -673,21 +677,21 @@ def load_config(env_name):
     parser.add_argument('--tag', type=str, default=None, help='Tag for experiment')
     parser.add_argument('--slowly', action='store_true', help='Use PyTorch training backend')
     parser.add_argument('--ollama-strategy', action='store_true',
-        help='Use Ollama/Qwen3 to adjust NMMO3 reward weights and gamma')
+        help='Use Ollama/Qwen3 to adjust NMMO3 reward preferences')
     parser.add_argument('--ollama-interval', type=int, default=720,
-        help='NMMO3 ticks between shared Qwen3 reward-weight updates')
+        help='NMMO3 ticks between shared Qwen3 reward-guidance updates')
     parser.add_argument('--gemini-strategy', action='store_true',
-        help='Use Google Gemini to adjust NMMO3 reward weights and gamma')
+        help='Use Google Gemini to adjust NMMO3 reward preferences')
     parser.add_argument('--gemini-interval', type=int, default=720,
-        help='NMMO3 ticks between shared Gemini reward-weight updates')
+        help='NMMO3 ticks between shared Gemini reward-guidance updates')
     parser.add_argument('--gpt-strategy', action='store_true',
-        help='Use OpenAI GPT to adjust NMMO3 reward weights and gamma')
+        help='Use OpenAI GPT to adjust NMMO3 reward preferences')
     parser.add_argument('--gpt-interval', type=int, default=720,
-        help='NMMO3 ticks between shared GPT reward-weight updates')
+        help='NMMO3 ticks between shared GPT reward-guidance updates')
     parser.add_argument('--openrouter-strategy', action='store_true',
-        help='Use OpenRouter Gemma to adjust NMMO3 reward weights and gamma')
+        help='Use OpenRouter Gemma to adjust NMMO3 reward preferences')
     parser.add_argument('--openrouter-interval', type=int, default=720,
-        help='NMMO3 ticks between shared OpenRouter reward-weight updates')
+        help='NMMO3 ticks between shared OpenRouter reward-guidance updates')
     parser.add_argument('--save-frames', type=int, default=0)
     parser.add_argument('--gif-path', type=str, default='eval.gif')
     parser.add_argument('--fps', type=float, default=15)
