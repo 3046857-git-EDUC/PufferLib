@@ -1931,6 +1931,10 @@ void c_step(MMO* env) {
     if (env->strategy_enabled) {
         (void)nmmo3_strategy_step(env, 0);
     }
+    env->log.llm_cumulative_input_tokens =
+        (float)env->llm_cumulative_input_tokens;
+    env->log.llm_cumulative_output_tokens =
+        (float)env->llm_cumulative_output_tokens;
 
     // Respawn resources
     RespawnBuffer* buffer = env->resource_respawn_buffer;
